@@ -2,24 +2,36 @@
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfstate.backup
 tfplan
 tfplan.*
 *.tfplan
+*.tfplan.json
 crash.log
 crash.*.log
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+.terraformrc
+terraform.rc
 
 # Variables con valores sensibles (usar .example como template)
 terraform.tfvars
 *.auto.tfvars
+secret.tfvars
+secrets.tfvars
 
 # Archivos de prueba/tokens sensibles
 test-tokens.txt
 *.pem
 *.key
+*.crt
+*.p12
+*.pfx
+*credentials*
+*secret*
+!*.example
 
 # IDEs
 .idea/
@@ -27,6 +39,7 @@ test-tokens.txt
 *.swp
 *.swo
 *~
+*.iml
 
 # Claude Code
 .claude/
@@ -46,7 +59,21 @@ ENV/
 .eggs/
 dist/
 build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Backups
+*.bak
+*.backup
+*.orig

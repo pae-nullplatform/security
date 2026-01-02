@@ -1,0 +1,101 @@
+{
+  "ApiAccess": {
+    "entityTypes": {
+      "User": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "email": {
+              "type": "String",
+              "required": false
+            },
+            "sub": {
+              "type": "String",
+              "required": true
+            },
+            "iss": {
+              "type": "String",
+              "required": true
+            },
+            "exp": {
+              "type": "Long",
+              "required": false
+            },
+            "iat": {
+              "type": "Long",
+              "required": false
+            },
+            "custom_claims": {
+              "type": "Record",
+              "attributes": {},
+              "required": false
+            }
+          }
+        },
+        "memberOfTypes": ["Group"]
+      },
+      "Group": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "name": {
+              "type": "String",
+              "required": true
+            }
+          }
+        }
+      },
+      "Resource": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "path": {
+              "type": "String",
+              "required": true
+            },
+            "method": {
+              "type": "String",
+              "required": true
+            },
+            "host": {
+              "type": "String",
+              "required": false
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "GET": {
+        "appliesTo": {
+          "principalTypes": ["User", "Group"],
+          "resourceTypes": ["Resource"]
+        }
+      },
+      "POST": {
+        "appliesTo": {
+          "principalTypes": ["User", "Group"],
+          "resourceTypes": ["Resource"]
+        }
+      },
+      "PUT": {
+        "appliesTo": {
+          "principalTypes": ["User", "Group"],
+          "resourceTypes": ["Resource"]
+        }
+      },
+      "DELETE": {
+        "appliesTo": {
+          "principalTypes": ["User", "Group"],
+          "resourceTypes": ["Resource"]
+        }
+      },
+      "PATCH": {
+        "appliesTo": {
+          "principalTypes": ["User", "Group"],
+          "resourceTypes": ["Resource"]
+        }
+      }
+    }
+  }
+}

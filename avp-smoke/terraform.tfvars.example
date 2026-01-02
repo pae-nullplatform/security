@@ -1,0 +1,47 @@
+# ============================================================================
+# Example Terraform Variables
+# ============================================================================
+# Copy this file to terraform.tfvars and adjust values as needed
+# ============================================================================
+
+project     = "pae"
+environment = "smoke"
+aws_region  = "us-east-1"
+
+# EKS Configuration (required)
+# ----------------------------
+eks_cluster_name = "pae-cluster"
+
+# JWT Configuration
+# -----------------
+jwt_issuer       = "https://testing.secure.istio.io"
+jwt_audiences    = ["api.pae-infra.nullapps.io"]
+jwt_groups_claim = "groups"
+
+# Kubernetes Configuration
+# ------------------------
+kubernetes_namespace = "gateway"
+
+gateway_selector = {
+  app = "gateway-public"
+}
+
+protected_paths = [
+  "/smoke",
+  "/smoke/*"
+]
+
+# Authorizer Pod Configuration
+# ----------------------------
+# After first deployment, set this to your ECR image URL
+# authorizer_image = "<account>.dkr.ecr.us-east-1.amazonaws.com/pae-smoke-avp-authorizer:latest"
+authorizer_replicas = 2
+log_level           = "INFO"
+
+# Tags
+# ----
+tags = {
+  Team        = "platform"
+  CostCenter  = "infrastructure"
+  Application = "pae-smoke-test"
+}

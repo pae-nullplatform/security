@@ -1,0 +1,52 @@
+# Terraform/OpenTofu
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+tfplan.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variables con valores sensibles (usar .example como template)
+terraform.tfvars
+*.auto.tfvars
+
+# Archivos de prueba/tokens sensibles
+test-tokens.txt
+*.pem
+*.key
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db

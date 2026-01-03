@@ -221,6 +221,7 @@ resource "docker_image" "authorizer" {
   build {
     context    = "${path.module}/authorizer"
     dockerfile = "Dockerfile"
+    platform   = "linux/amd64"
     label = {
       "org.opencontainers.image.version" = local.authorizer_version
       "org.opencontainers.image.source"  = "terraform"

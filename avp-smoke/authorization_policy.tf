@@ -141,8 +141,9 @@ resource "kubernetes_deployment_v1" "avp_ext_authz" {
         service_account_name = kubernetes_service_account_v1.avp_ext_authz.metadata[0].name
 
         container {
-          name  = "authorizer"
-          image = docker_registry_image.authorizer.name
+          name              = "authorizer"
+          image             = docker_registry_image.authorizer.name
+          image_pull_policy = "Always"
 
           port {
             name           = "http"

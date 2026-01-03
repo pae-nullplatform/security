@@ -143,7 +143,7 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 |  | extensionProviders:                                         |  |
 |  | - name: avp-ext-authz                                       |  |
 |  |   envoyExtAuthzHttp:                                        |  |
-|  |     service: avp-ext-authz.gateways.svc.cluster.local       |  |
+|  |     service: avp-ext-authz.<namespace>.svc.cluster.local    |  |
 |  |     port: 9191                                              |  |
 |  |     includeRequestHeadersInCheck:                           |  |
 |  |       - authorization                                       |  |
@@ -299,18 +299,19 @@ avp-smoke/
 
 ### Variables Principales
 
-| Variable | Descripcion | Default |
-|----------|-------------|---------|
-| `project` | Nombre del proyecto | `pae` |
-| `environment` | Ambiente | `smoke` |
-| `eks_cluster_name` | Nombre del cluster EKS | - |
-| `kubernetes_namespace` | Namespace para el authorizer | `gateways` |
-| `protected_paths` | Paths a proteger | `["/smoke", "/smoke/*"]` |
-| `jwt_issuer` | Issuer del JWT | `https://testing.secure.istio.io` |
-| `gateway_selector` | Labels del gateway | `{gateway.networking.k8s.io/gateway-name: gateway-public}` |
-| `authorizer_image` | Imagen del authorizer | ECR URL |
-| `authorizer_replicas` | Numero de replicas | `2` |
-| `log_level` | Nivel de logs | `INFO` |
+| Variable | Descripcion |
+|----------|-------------|
+| `project` | Nombre del proyecto |
+| `environment` | Ambiente |
+| `aws_region` | Region de AWS |
+| `aws_profile` | Perfil de AWS CLI |
+| `eks_cluster_name` | Nombre del cluster EKS |
+| `kubernetes_namespace` | Namespace para el authorizer |
+| `protected_paths` | Paths a proteger |
+| `gateway_selector` | Labels del gateway |
+| `authorizer_replicas` | Numero de replicas |
+| `log_level` | Nivel de logs |
+| `tags` | Tags adicionales para recursos |
 
 ### Tokens JWT de Prueba
 
@@ -334,7 +335,7 @@ Estructura del payload JWT:
 ```json
 {
   "sub": "test-user-smoke",
-  "iss": "https://testing.secure.istio.io",
+  "iss": "<jwt-issuer>",
   "iat": 1767388951,
   "exp": 1767392551,
   "groups": ["smoke-testers"]
@@ -357,27 +358,6 @@ AWS_PROFILE=<aws-profile> tofu plan
 # Aplicar
 AWS_PROFILE=<aws-profile> tofu apply
 ```
-
-### 2. Build y push del authorizer (si es necesario)
-
-```bash
-cd authorizer
-
-# Login a ECR (usar el ECR repository URL del output de terraform)
-aws ecr get-login-password --region <aws-region> --profile <aws-profile> | \
-  docker login --username AWS --password-stdin <ecr-repository-url>
-
-# Build
-docker build -t <ecr-repository-url>:latest .
-
-# Push
-docker push <ecr-repository-url>:latest
-
-# Restart pods para usar nueva imagen
-kubectl rollout restart deployment avp-ext-authz -n gateways
-```
-
-> **Nota:** El `<ecr-repository-url>` se obtiene del output `ecr_repository_url` despues de aplicar Terraform.
 
 ## Modificar Politicas y Endpoints
 
@@ -525,7 +505,7 @@ when {
 ```python
 payload = {
     "sub": "dev-user",
-    "iss": "https://testing.secure.istio.io",
+    "iss": "<jwt-issuer>",
     "groups": ["developers"],  # Nuevo grupo
     "exp": int(time.time()) + 3600
 }
@@ -602,20 +582,20 @@ curl -s -o /dev/null -w "%{http_code}" -X POST \
 
 ```bash
 # Logs en tiempo real
-kubectl logs -n gateways -l app=avp-ext-authz -f
+kubectl logs -n <namespace> -l app=avp-ext-authz -f
 
 # Ultimos 50 logs
-kubectl logs -n gateways -l app=avp-ext-authz --tail=50
+kubectl logs -n <namespace> -l app=avp-ext-authz --tail=50
 ```
 
 ### Verificar recursos
 
 ```bash
 # Pods
-kubectl get pods -n gateways -l app=avp-ext-authz
+kubectl get pods -n <namespace> -l app=avp-ext-authz
 
 # AuthorizationPolicy
-kubectl describe authorizationpolicy avp-ext-authz-smoke -n gateways
+kubectl describe authorizationpolicy avp-ext-authz-smoke -n <namespace>
 
 # Mesh config
 kubectl get configmap istio -n istio-system -o yaml | grep -A 20 extensionProviders

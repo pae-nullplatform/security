@@ -21,12 +21,6 @@ terraform {
   }
 }
 
-variable "aws_profile" {
-  description = "AWS profile to use"
-  type        = string
-  default     = "providers-test"
-}
-
 provider "aws" {
   region  = var.aws_region
   profile = var.aws_profile != "" ? var.aws_profile : null

@@ -201,8 +201,8 @@ resource "kubernetes_deployment_v1" "avp_ext_authz" {
           }
 
           security_context {
-            run_as_non_root           = true
-            run_as_user               = 1000
+            run_as_non_root            = true
+            run_as_user                = 1000
             allow_privilege_escalation = false
             capabilities {
               drop = ["ALL"]

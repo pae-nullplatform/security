@@ -1,0 +1,161 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-hello-config
+  namespace: nullplatform
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Hello World</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            }
+            .container {
+                text-align: center;
+                color: white;
+            }
+            h1 {
+                font-size: 4em;
+                margin: 0;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            }
+        </style>
+    </head>
+    <body>
+    <div class="container">
+        <h1>Hello World! 🌍</h1>
+        <p>Servido por Nginx en Kubernetes</p>
+    </div>
+    </body>
+    </html>
+
+  # key válida (sin /)
+  smoke-index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Hello Smoke</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background: #111827;
+                color: white;
+            }
+            h1 { font-size: 3em; margin: 0; }
+        </style>
+    </head>
+    <body>
+    <h1>Hello Smoke ✅</h1>
+    </body>
+    </html>
+
+  default.conf: |
+    server {
+      listen 80;
+      server_name _;
+      root /usr/share/nginx/html;
+      index index.html;
+
+      location = /smoke {
+        return 302 /smoke/;
+      }
+
+      location = /created {
+        if ($request_method = POST) {
+          return 204;
+        }
+        return 405;
+      }
+
+      location / {
+        try_files $uri $uri/ =404;
+      }
+    }
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-hello
+  namespace: nullplatform
+  labels:
+    app: nginx-hello
+spec:
+  containers:
+    - name: nginx
+      image: nginx:alpine
+      ports:
+        - containerPort: 80
+          name: http
+      volumeMounts:
+        - name: html-content
+          mountPath: /usr/share/nginx/html
+
+        - name: html-content
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+  volumes:
+    - name: html-content
+      configMap:
+        name: nginx-hello-config
+        items:
+          - key: index.html
+            path: index.html
+          - key: smoke-index.html
+            path: smoke/index.html
+          - key: default.conf
+            path: default.conf
+
+---
+# Service para exponer el Pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-hello-service
+  namespace: nullplatform
+spec:
+  selector:
+    app: nginx-hello
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      name: http
+  type: ClusterIP
+
+---
+# HTTPRoute para conectar con el Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: nginx-hello-route
+  namespace: nullplatform
+spec:
+  parentRefs:
+    - name: gateway-public
+      namespace: gateways
+  hostnames:
+    - "hello.pae-infra.nullapps.io"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: nginx-hello-service
+          port: 80

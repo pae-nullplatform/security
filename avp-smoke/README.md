@@ -2,71 +2,107 @@
 
 Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissions (AVP) integrado con Istio Service Mesh.
 
+## Modos de Deployment
+
+El authorizer soporta dos modos de deployment:
+
+| Modo | Descripcion | Uso recomendado |
+|------|-------------|-----------------|
+| **Pod** | Deployment de Kubernetes in-cluster | Baja latencia, alto volumen |
+| **Lambda** | AWS Lambda con Function URL | Costo variable, serverless |
+
+> Ver [COMPARATIVA.md](./COMPARATIVA.md) para un analisis detallado de cada modo.
+
 ## Arquitectura
+
+### Modo Pod (in-cluster)
 
 ```
 +------------------------------------------------------------------+
-|                        Request Flow                               |
+|                    Request Flow (Pod Mode)                        |
 +------------------------------------------------------------------+
 
     Cliente HTTP
          |
-         | 1. GET/POST /smoke/ o /created
-         |    Authorization: Bearer <JWT>
+         | Authorization: Bearer <JWT>
          v
-+------------------+
-|   AWS ALB        |
-|   (HTTPS:443)    |
-+--------+---------+
+    Istio Gateway
          |
-         | 2. Forward to Istio Gateway
          v
-+------------------+
-| Istio Gateway    |
-| (gateway-public) |
-+--------+---------+
+    AuthorizationPolicy (CUSTOM)
          |
-         | 3. AuthorizationPolicy intercepta
-         |    paths protegidos
          v
-+------------------+
-| AuthzPolicy      |
-| (CUSTOM action)  |
-+--------+---------+
+    AVP Ext-Authz Pod (Python:9191)
          |
-         | 4. Envia request a ext-authz
-         |    Headers: x-original-method, x-original-uri
+         | IsAuthorized API
          v
-+------------------+
-| AVP Ext-Authz    |
-| Pod (Python)     |
-+--------+---------+
+    Amazon Verified Permissions
          |
-         | 5. Decodifica JWT
-         | 6. Valida expiracion
-         | 7. Extrae grupos
          v
-+------------------+
-| Amazon Verified  |
-| Permissions      |
-| (IsAuthorized)   |
-+--------+---------+
-         |
-         | 8. Evalua politicas Cedar
-         v
-+------------------+
-| Decision:        |
-| ALLOW / DENY     |
-+--------+---------+
-         |
-         | 9a. ALLOW: Continua al backend
-         | 9b. DENY: Retorna 401/403
-         v
-+------------------+
-| Backend Pod      |
-| (nginx-hello)    |
-+------------------+
+    ALLOW / DENY
 ```
+
+### Modo Lambda (serverless)
+
+```
++------------------------------------------------------------------+
+|                    Request Flow (Lambda Mode)                     |
++------------------------------------------------------------------+
+
+    Cliente HTTP
+         |
+         | Authorization: Bearer <JWT>
+         v
+    Istio Gateway
+         |
+         v
+    AuthorizationPolicy (CUSTOM)
+         |
+         v
+    ServiceEntry + DestinationRule
+         |
+         | HTTPS (443)
+         v
+    Lambda Function URL
+         |
+         | IsAuthorized API
+         v
+    Amazon Verified Permissions
+         |
+         v
+    ALLOW / DENY
+```
+
+## Modos de AuthorizationPolicy
+
+El modulo soporta dos formas de aplicar las policies de autorizacion:
+
+### 1. Gateway Selector (Legacy)
+
+Aplica la policy a todos los paths del gateway usando labels:
+
+```hcl
+gateway_selector = {
+  "gateway.networking.k8s.io/gateway-name" = "gateway-public"
+}
+protected_paths = ["/smoke/*", "/api/*"]
+```
+
+### 2. HTTPRoute targetRef (Istio 1.22+)
+
+Aplica la policy directamente a HTTPRoutes especificos:
+
+```hcl
+httproute_policies = {
+  my-service = {
+    httproute_name = "my-service"
+    paths          = ["/smoke", "/smoke/*", "/api/*"]
+    methods        = ["GET", "POST"]
+  }
+}
+```
+
+> **Recomendado:** HTTPRoute targetRef para control granular por servicio.
 
 ## Componentes
 
@@ -75,7 +111,6 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 ```
 +------------------------------------------------------------------+
 |                    AVP Policy Store                               |
-|                 (<policy-store-id>)                               |
 +------------------------------------------------------------------+
 |                                                                   |
 |  +-------------------+  +-------------------+  +----------------+ |
@@ -86,47 +121,29 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 |  | - Group           |  | - allow_smoke     |  |  para smoke    | |
 |  | - Resource        |  | - deny_expired    |  |  test)         | |
 |  | - Actions (CRUD)  |  |                   |  |                | |
-|  |                   |  |                   |  |                | |
 |  +-------------------+  +-------------------+  +----------------+ |
-|                                                                   |
 +------------------------------------------------------------------+
 ```
 
-### 2. AVP Authorizer Pod
+### 2. AVP Authorizer (Pod o Lambda)
 
 ```
 +------------------------------------------------------------------+
-|                    AVP Ext-Authz Pod                              |
-|                   (2 replicas, HA)                                |
+|                    AVP Authorizer Logic                           |
 +------------------------------------------------------------------+
 |                                                                   |
-|  +------------------------+    +-----------------------------+   |
-|  |   HTTP Server          |    |   Authorization Logic       |   |
-|  |   (Port 9191)          |    |                             |   |
-|  +------------------------+    +-----------------------------+   |
-|  |                        |    |                             |   |
-|  | Endpoints:             |    | 1. Extract JWT from header  |   |
-|  | - /health (healthz)    |    | 2. Decode payload (base64)  |   |
-|  | - /* (auth check)      |    | 3. Check expiration         |   |
-|  |                        |    | 4. Extract user & groups    |   |
-|  | Headers recibidos:     |    | 5. Build AVP entities       |   |
-|  | - authorization        |    | 6. Call IsAuthorized API    |   |
-|  | - x-original-method    |    | 7. Return ALLOW/DENY        |   |
-|  | - x-original-uri       |    |                             |   |
-|  | - x-original-host      |    +-----------------------------+   |
-|  |                        |                                      |
-|  +------------------------+                                      |
+|  1. Extract JWT from Authorization header                         |
+|  2. Decode payload (base64, no signature verification)            |
+|  3. Check token expiration locally                                |
+|  4. Extract user (sub) and groups                                 |
+|  5. Build AVP entities (User, Group, Resource)                    |
+|  6. Call IsAuthorized API                                         |
+|  7. Return ALLOW (200) or DENY (401/403)                          |
 |                                                                   |
-|  +------------------------+    +-----------------------------+   |
-|  |   IRSA (IAM Role)      |    |   Environment Variables     |   |
-|  +------------------------+    +-----------------------------+   |
-|  |                        |    |                             |   |
-|  | Permisos:              |    | - POLICY_STORE_ID           |   |
-|  | - verifiedpermissions: |    | - AWS_REGION                |   |
-|  |   IsAuthorized         |    | - HTTP_PORT                 |   |
-|  |   IsAuthorizedWithToken|    | - LOG_LEVEL                 |   |
-|  |                        |    |                             |   |
-|  +------------------------+    +-----------------------------+   |
+|  Headers retornados:                                              |
+|  - x-user-id: Subject del token                                   |
+|  - x-avp-decision: ALLOW o DENY                                   |
+|  - x-validated-by: amazon-verified-permissions                    |
 |                                                                   |
 +------------------------------------------------------------------+
 ```
@@ -143,8 +160,8 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 |  | extensionProviders:                                         |  |
 |  | - name: avp-ext-authz                                       |  |
 |  |   envoyExtAuthzHttp:                                        |  |
-|  |     service: avp-ext-authz.<namespace>.svc.cluster.local    |  |
-|  |     port: 9191                                              |  |
+|  |     service: <pod-service o lambda-externalname>            |  |
+|  |     port: 9191 (pod) o 443 (lambda)                         |  |
 |  |     includeRequestHeadersInCheck:                           |  |
 |  |       - authorization                                       |  |
 |  |       - x-forwarded-for                                     |  |
@@ -152,25 +169,18 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 |  |       x-original-method: "%REQ(:METHOD)%"                   |  |
 |  |       x-original-uri: "%REQ(:PATH)%"                        |  |
 |  |       x-original-host: "%REQ(:AUTHORITY)%"                  |  |
-|  |     headersToUpstreamOnAllow:                               |  |
-|  |       - x-user-id                                           |  |
-|  |       - x-avp-decision                                      |  |
-|  |       - x-validated-by                                      |  |
 |  +------------------------------------------------------------+  |
 |                                                                   |
-|  AuthorizationPolicy: avp-ext-authz-smoke (gateways)             |
+|  AuthorizationPolicy (HTTPRoute targetRef - Istio 1.22+)         |
 |  +------------------------------------------------------------+  |
 |  | spec:                                                       |  |
-|  |   selector:                                                 |  |
-|  |     matchLabels:                                            |  |
-|  |       gateway.networking.k8s.io/gateway-name: gateway-public|  |
+|  |   targetRef:                                                |  |
+|  |     group: gateway.networking.k8s.io                        |  |
+|  |     kind: HTTPRoute                                         |  |
+|  |     name: my-httproute                                      |  |
 |  |   action: CUSTOM                                            |  |
 |  |   provider:                                                 |  |
 |  |     name: avp-ext-authz                                     |  |
-|  |   rules:                                                    |  |
-|  |   - to:                                                     |  |
-|  |     - operation:                                            |  |
-|  |         paths: ["/smoke", "/smoke/*", "/created", ...]      |  |
 |  +------------------------------------------------------------+  |
 |                                                                   |
 +------------------------------------------------------------------+
@@ -179,8 +189,6 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 ## Politicas Cedar
 
 ### Schema (`schema.json`)
-
-Define los tipos de entidades y acciones permitidas:
 
 ```
 +------------------------------------------------------------------+
@@ -231,17 +239,6 @@ permit (
 );
 ```
 
-#### `deny_expired_tokens.cedar`
-```cedar
-// Placeholder - la expiracion se valida en el authorizer
-forbid (
-    principal,
-    action,
-    resource
-)
-when { false };
-```
-
 ## Matriz de Autorizacion
 
 ```
@@ -259,16 +256,6 @@ when { false };
 |  | smoke-testers    | 200   | 200   | 403   | 403   | 403   |    |
 |  +------------------+-------+-------+-------+-------+-------+    |
 |                                                                   |
-|  Endpoint: /created                                              |
-|  +------------------+-------+-------+-------+-------+-------+    |
-|  | Principal/Action | GET   | POST  | PUT   | DELETE| PATCH |    |
-|  +------------------+-------+-------+-------+-------+-------+    |
-|  | No token         | 401   | 401   | 401   | 401   | 401   |    |
-|  | Token expirado   | 401   | 401   | 401   | 401   | 401   |    |
-|  | User (any group) | 200   | 403   | 403   | 403   | 403   |    |
-|  | smoke-testers    | 200   | 204   | 403   | 403   | 403   |    |
-|  +------------------+-------+-------+-------+-------+-------+    |
-|                                                                   |
 +------------------------------------------------------------------+
 ```
 
@@ -276,358 +263,173 @@ when { false };
 
 ```
 avp-smoke/
-├── main.tf                 # Policy Store, Schema, Policies, IAM, ECR
-├── authorization_policy.tf # Istio mesh config, AuthzPolicy, Deployment
-├── variables.tf            # Variables de configuracion
-├── outputs.tf              # Outputs del modulo
-├── providers.tf            # AWS y Kubernetes providers
-├── backend.tf              # Backend S3
-├── terraform.tfvars        # Valores de variables
-├── schema.json             # Schema Cedar para AVP
-├── policies/               # Politicas Cedar
+├── main.tf                    # Policy Store, Schema, Policies, IAM, ECR
+├── lambda.tf                  # Lambda function, Function URL, IAM
+├── authorization_policy.tf    # Istio config (Pod/Lambda), AuthzPolicy
+├── variables.tf               # Variables de configuracion
+├── outputs.tf                 # Outputs del modulo
+├── providers.tf               # AWS, Kubernetes, Docker, Archive providers
+├── backend.tf                 # Backend S3
+├── terraform.tfvars           # Valores de variables
+├── schema.json                # Schema Cedar para AVP
+├── policies/                  # Politicas Cedar
 │   ├── allow_authenticated_read.cedar
 │   ├── allow_smoke_access.cedar
 │   └── deny_expired_tokens.cedar
-├── authorizer/             # Codigo del autorizador
-│   ├── server.py           # HTTP server Python
-│   ├── Dockerfile          # Imagen Docker
-│   └── requirements.txt    # Dependencias Python
-└── test-tokens.txt         # Tokens JWT para pruebas
+├── authorizer/                # Codigo del autorizador
+│   ├── server.py              # HTTP server Python (Pod mode)
+│   ├── lambda_handler.py      # Lambda handler Python (Lambda mode)
+│   ├── Dockerfile             # Imagen Docker (Pod mode)
+│   └── requirements.txt       # Dependencias Python
+├── COMPARATIVA.md             # Comparativa Pod vs Lambda
+└── test-tokens.txt            # Tokens JWT para pruebas
 ```
 
 ## Configuracion
 
 ### Variables Principales
 
-| Variable | Descripcion |
-|----------|-------------|
-| `project` | Nombre del proyecto |
-| `environment` | Ambiente |
-| `aws_region` | Region de AWS |
-| `aws_profile` | Perfil de AWS CLI |
-| `eks_cluster_name` | Nombre del cluster EKS |
-| `kubernetes_namespace` | Namespace para el authorizer |
-| `protected_paths` | Paths a proteger |
-| `gateway_selector` | Labels del gateway |
-| `authorizer_replicas` | Numero de replicas |
-| `log_level` | Nivel de logs |
-| `tags` | Tags adicionales para recursos |
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `authorizer_mode` | Modo de deployment: "pod" o "lambda" | "pod" |
+| `project` | Nombre del proyecto | - |
+| `environment` | Ambiente | - |
+| `aws_region` | Region de AWS | - |
+| `eks_cluster_name` | Nombre del cluster EKS | - |
+| `kubernetes_namespace` | Namespace para recursos | - |
 
-### Tokens JWT de Prueba
+### Variables HTTPRoute
 
-Los tokens se encuentran en `test-tokens.txt`:
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `httproute_policies` | Map de policies por HTTPRoute | {} |
+| `gateway_selector` | Labels del gateway (legacy) | {} |
+| `protected_paths` | Paths a proteger (legacy) | [] |
 
-```bash
-# Cargar tokens
-source test-tokens.txt
+### Variables Pod Mode
 
-# Token expirado (401)
-echo $TOKEN_EXPIRED
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `authorizer_replicas` | Numero de replicas | 2 |
+| `log_level` | Nivel de logs | "INFO" |
 
-# Token valido sin grupo smoke-testers (GET: 200, POST: 403)
-echo $TOKEN_VALID_NO_GROUP
+### Variables Lambda Mode
 
-# Token valido con grupo smoke-testers (GET/POST: 200)
-echo $TOKEN_VALID_SMOKE
-```
-
-Estructura del payload JWT:
-```json
-{
-  "sub": "test-user-smoke",
-  "iss": "<jwt-issuer>",
-  "iat": 1767388951,
-  "exp": 1767392551,
-  "groups": ["smoke-testers"]
-}
-```
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `lambda_memory_size` | Memoria en MB | 256 |
+| `lambda_timeout` | Timeout en segundos | 10 |
+| `lambda_reserved_concurrency` | Concurrencia reservada (-1 = sin reserva) | -1 |
 
 ## Despliegue
 
-### 1. Inicializar y aplicar
+### Configuracion minima (Lambda + HTTPRoute)
+
+```hcl
+# terraform.tfvars
+project              = "my-project"
+environment          = "dev"
+aws_region           = "us-east-1"
+eks_cluster_name     = "my-cluster"
+kubernetes_namespace = "gateways"
+
+# Authorizer mode
+authorizer_mode = "lambda"
+
+# HTTPRoute policies
+httproute_policies = {
+  my-service = {
+    httproute_name = "my-service"
+    paths          = ["/api/*"]
+    methods        = ["GET", "POST"]
+  }
+}
+```
+
+### Comandos
 
 ```bash
 cd security/avp-smoke
 
-# Inicializar Terraform
+# Inicializar
 tofu init
 
 # Ver plan
-AWS_PROFILE=<aws-profile> tofu plan
+tofu plan
 
 # Aplicar
-AWS_PROFILE=<aws-profile> tofu apply
+tofu apply
 ```
 
-## Modificar Politicas y Endpoints
+## Agregar Nuevos Servicios
 
-### Agregar un nuevo endpoint protegido
+Para proteger un nuevo HTTPRoute:
 
-Para proteger un nuevo endpoint (ej: `/api/users`):
-
-```
-+------------------------------------------------------------------+
-|                    Proceso de Modificacion                        |
-+------------------------------------------------------------------+
-|                                                                   |
-|  1. terraform.tfvars          2. tofu apply                      |
-|  +---------------------+      +---------------------+             |
-|  | protected_paths = [ |  --> | AuthorizationPolicy |             |
-|  |   "/smoke/*",       |      | actualizada con     |             |
-|  |   "/api/users/*"    |      | nuevos paths        |             |
-|  | ]                   |      +---------------------+             |
-|  +---------------------+                                          |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-**Pasos:**
-
-1. Editar `terraform.tfvars`:
 ```hcl
-protected_paths = [
-  "/smoke",
-  "/smoke/*",
-  "/created",
-  "/created/*",
-  "/api/users",      # Nuevo endpoint
-  "/api/users/*"     # Incluir sub-rutas
-]
-```
-
-2. Aplicar cambios:
-```bash
-AWS_PROFILE=<aws-profile> tofu apply
-```
-
-> **Nota:** No es necesario reiniciar pods. Istio detecta automaticamente los cambios en AuthorizationPolicy.
-
----
-
-### Agregar un nuevo metodo HTTP
-
-Para permitir nuevos metodos (ej: `PUT`, `DELETE`), modificar el schema y las politicas:
-
-```
-+------------------------------------------------------------------+
-|                    Archivos a Modificar                           |
-+------------------------------------------------------------------+
-|                                                                   |
-|  1. schema.json       2. policies/*.cedar    3. tofu apply       |
-|  +--------------+     +------------------+   +----------------+   |
-|  | actions:     | --> | permit (         |-->| Politicas      |   |
-|  |   GET, POST, |     |   action in [    |   | actualizadas   |   |
-|  |   PUT, DELETE|     |     PUT, DELETE  |   | en AVP         |   |
-|  | )            |     |   ]              |   +----------------+   |
-|  +--------------+     +------------------+                        |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-**Pasos:**
-
-1. Verificar que el metodo existe en `schema.json` (ya incluye GET, POST, PUT, DELETE, PATCH)
-
-2. Crear o modificar politica Cedar en `policies/`:
-```cedar
-// policies/allow_admin_write.cedar
-// Permite PUT/DELETE solo a usuarios del grupo admin
-permit (
-    principal in ApiAccess::Group::"admin",
-    action in [ApiAccess::Action::"PUT", ApiAccess::Action::"DELETE"],
-    resource
-);
-```
-
-3. Registrar la politica en `main.tf`:
-```hcl
-resource "aws_verifiedpermissions_policy" "allow_admin_write" {
-  policy_store_id = aws_verifiedpermissions_policy_store.main.id
-
-  definition {
-    static {
-      description = "Allow admin group to modify resources"
-      statement   = file("${path.module}/policies/allow_admin_write.cedar")
-    }
+httproute_policies = {
+  # Servicio existente
+  nginx-hello = {
+    httproute_name = "nginx-hello"
+    paths          = ["/smoke", "/smoke/*"]
+    methods        = ["GET", "POST"]
   }
 
-  depends_on = [aws_verifiedpermissions_schema.main]
+  # Nuevo servicio
+  api-users = {
+    httproute_name = "api-users"
+    paths          = ["/users", "/users/*"]
+    methods        = ["GET", "POST", "PUT", "DELETE"]
+  }
 }
 ```
 
-4. Aplicar cambios:
+Luego aplicar:
 ```bash
-AWS_PROFILE=<aws-profile> tofu apply
+tofu apply
 ```
-
----
-
-### Agregar un nuevo grupo de usuarios
-
-Para crear permisos basados en un nuevo grupo (ej: `developers`):
-
-```
-+------------------------------------------------------------------+
-|                    Flujo de Autorizacion por Grupo                |
-+------------------------------------------------------------------+
-|                                                                   |
-|  JWT Token                    AVP Policy                          |
-|  +------------------+         +---------------------------+       |
-|  | {                |         | permit (                  |       |
-|  |   "sub": "user1",|  -----> |   principal in            |       |
-|  |   "groups": [    |         |     ApiAccess::Group::    |       |
-|  |     "developers" |         |       "developers",       |       |
-|  |   ]              |         |   action == ...           |       |
-|  | }                |         | );                        |       |
-|  +------------------+         +---------------------------+       |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-**Pasos:**
-
-1. Crear politica en `policies/allow_developers.cedar`:
-```cedar
-// Permite a developers hacer GET/POST en /api/*
-permit (
-    principal in ApiAccess::Group::"developers",
-    action in [ApiAccess::Action::"GET", ApiAccess::Action::"POST"],
-    resource
-)
-when {
-    resource.path like "/api/*"
-};
-```
-
-2. Registrar en `main.tf` y aplicar con `tofu apply`
-
-3. Generar token de prueba con el grupo:
-```python
-payload = {
-    "sub": "dev-user",
-    "iss": "<jwt-issuer>",
-    "groups": ["developers"],  # Nuevo grupo
-    "exp": int(time.time()) + 3600
-}
-```
-
----
-
-### Modificar una politica existente
-
-Para cambiar el comportamiento de una politica:
-
-1. Editar el archivo `.cedar` correspondiente en `policies/`
-2. Aplicar:
-```bash
-AWS_PROFILE=<aws-profile> tofu apply
-```
-
-> **Importante:** AVP valida las politicas contra el schema. Si la politica es invalida, Terraform fallara con un error de validacion.
-
----
-
-### Resumen de archivos segun tipo de cambio
-
-| Cambio | Archivos a modificar |
-|--------|---------------------|
-| Nuevo endpoint | `terraform.tfvars` (protected_paths) |
-| Nuevo metodo HTTP | `schema.json` + `policies/*.cedar` + `main.tf` |
-| Nuevo grupo | `policies/*.cedar` + `main.tf` |
-| Modificar permisos | `policies/*.cedar` |
-| Cambiar selector gateway | `terraform.tfvars` (gateway_selector) |
-
----
-
-## Pruebas
-
-### Ejecutar suite de pruebas
-
-```bash
-# Cargar tokens
-source test-tokens.txt
-
-# Dominio configurado en el HTTPRoute del pod de prueba (infrastructure/pod-test.yaml)
-DOMAIN="<your-test-domain>"
-
-# Test 1: Sin token (401)
-curl -s -o /dev/null -w "%{http_code}" "https://$DOMAIN/smoke/"
-
-# Test 2: Token expirado (401)
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN_EXPIRED" \
-  "https://$DOMAIN/smoke/"
-
-# Test 3: GET con token valido (200)
-curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer $TOKEN_VALID_NO_GROUP" \
-  "https://$DOMAIN/smoke/"
-
-# Test 4: POST sin grupo smoke-testers (403)
-curl -s -o /dev/null -w "%{http_code}" -X POST \
-  -H "Authorization: Bearer $TOKEN_VALID_NO_GROUP" \
-  "https://$DOMAIN/created"
-
-# Test 5: POST con grupo smoke-testers (204)
-curl -s -o /dev/null -w "%{http_code}" -X POST \
-  -H "Authorization: Bearer $TOKEN_VALID_SMOKE" \
-  "https://$DOMAIN/created"
-```
-
-> **Nota:** El dominio debe estar configurado en el HTTPRoute del pod de prueba (`infrastructure/pod-test.yaml`) y External DNS debe haber creado el registro en Route53.
 
 ## Debugging
 
-### Ver logs del authorizer
+### Pod Mode
 
 ```bash
-# Logs en tiempo real
+# Logs
 kubectl logs -n <namespace> -l app=avp-ext-authz -f
 
-# Ultimos 50 logs
-kubectl logs -n <namespace> -l app=avp-ext-authz --tail=50
-```
-
-### Verificar recursos
-
-```bash
-# Pods
+# Status
 kubectl get pods -n <namespace> -l app=avp-ext-authz
-
-# AuthorizationPolicy
-kubectl describe authorizationpolicy avp-ext-authz-smoke -n <namespace>
-
-# Mesh config
-kubectl get configmap istio -n istio-system -o yaml | grep -A 20 extensionProviders
 ```
 
-### Verificar AVP en AWS
+### Lambda Mode
 
 ```bash
-# Policy Store (obtener el ID del output de terraform)
-AWS_PROFILE=<aws-profile> aws verifiedpermissions list-policy-stores
+# Logs
+aws logs tail /aws/lambda/<project>-<env>-avp-authorizer --follow
 
-# Politicas (usar policy_store_id del output)
-AWS_PROFILE=<aws-profile> aws verifiedpermissions list-policies \
-  --policy-store-id <policy-store-id>
-
-# Test de autorizacion manual
-AWS_PROFILE=<aws-profile> aws verifiedpermissions is-authorized \
-  --policy-store-id <policy-store-id> \
-  --principal 'entityType=ApiAccess::User,entityId=test-user' \
-  --action 'actionType=ApiAccess::Action,actionId=GET' \
-  --resource 'entityType=ApiAccess::Resource,entityId=resource:/smoke'
+# Test directo
+curl https://<function-url>/health
 ```
 
-> **Nota:** El `<policy-store-id>` se obtiene del output `policy_store_id` despues de aplicar Terraform.
+### Istio
+
+```bash
+# AuthorizationPolicies
+kubectl get authorizationpolicies -n <namespace>
+
+# Extension providers
+kubectl get cm istio -n istio-system -o yaml | grep -A20 extensionProviders
+
+# Version (HTTPRoute targetRef requiere 1.22+)
+kubectl get pods -n istio-system -l app=istiod -o jsonpath='{.items[0].spec.containers[0].image}'
+```
 
 ## Outputs
 
 | Output | Descripcion |
 |--------|-------------|
 | `policy_store_id` | ID del Policy Store de AVP |
-| `policy_store_arn` | ARN del Policy Store |
-| `iam_role_arn` | ARN del IAM Role para IRSA |
-| `ecr_repository_url` | URL del repositorio ECR |
+| `authorizer_mode` | Modo actual (pod/lambda) |
+| `lambda_function_url` | URL de Lambda (solo lambda mode) |
+| `ecr_repository_url` | URL del ECR (solo pod mode) |
 | `ext_authz_service` | FQDN del servicio ext-authz |
-| `protected_paths` | Lista de paths protegidos |
+| `httproute_policies` | Policies de HTTPRoute creadas |

@@ -1,80 +1,51 @@
 # ============================================================================
 # Istio Authorization Policy - Amazon Verified Permissions
 # ============================================================================
-# This policy configures Istio to use the AVP ext-authz Pod for
-# authorization decisions on protected paths.
+# This file contains the common AuthorizationPolicy resources that are used
+# by both Pod and Lambda modes. Mode-specific resources are in:
+# - authorization_policy_pod.tf    (Pod mode)
+# - authorization_policy_lambda.tf (Lambda mode)
 # ============================================================================
 
 # ============================================================================
-# Extension Provider Configuration (applied to Istio mesh config)
+# Authorization Policy - Gateway Selector (Legacy/Compatible Mode)
 # ============================================================================
-
-resource "kubernetes_config_map_v1_data" "istio_mesh_config" {
-  metadata {
-    name      = "istio"
-    namespace = "istio-system"
-  }
-
-  data = {
-    mesh = yamlencode({
-      extensionProviders = [
-        {
-          name = "avp-ext-authz"
-          envoyExtAuthzHttp = {
-            service                      = "avp-ext-authz.${var.kubernetes_namespace}.svc.cluster.local"
-            port                         = 9191
-            includeRequestHeadersInCheck = ["authorization", "x-forwarded-for"]
-            # Include original request attributes as headers for the authorizer
-            includeAdditionalHeadersInCheck = {
-              "x-original-method" = "%REQ(:METHOD)%"
-              "x-original-uri"    = "%REQ(:PATH)%"
-              "x-original-host"   = "%REQ(:AUTHORITY)%"
-            }
-            headersToUpstreamOnAllow  = ["x-user-id", "x-avp-decision", "x-validated-by"]
-            headersToDownstreamOnDeny = ["x-avp-decision"]
-          }
-        }
-      ]
-    })
-  }
-
-  force = true
-}
-
-# ============================================================================
-# Authorization Policy - Protect /smoke endpoints
-# ============================================================================
+# This policy applies to the gateway and filters by host.
+# Used when backend pods don't have Istio sidecar.
 
 resource "kubernetes_manifest" "avp_authz_policy" {
+  count = length(var.gateway_selector) > 0 && length(var.protected_paths) > 0 ? 1 : 0
+
   manifest = {
     apiVersion = "security.istio.io/v1"
     kind       = "AuthorizationPolicy"
 
     metadata = {
-      name      = "avp-ext-authz-smoke"
+      name      = "avp-ext-authz-gateway"
       namespace = var.kubernetes_namespace
+      labels = {
+        "app.kubernetes.io/managed-by" = "terraform"
+        "app.kubernetes.io/component"  = "authorization"
+        "policy-mode"                  = "gateway-selector"
+      }
     }
 
     spec = {
-      # Apply to the gateway
       selector = {
         matchLabels = var.gateway_selector
       }
-
-      # Use external authorization (AVP)
       action = "CUSTOM"
       provider = {
         name = "avp-ext-authz"
       }
-
-      # Protect these paths
       rules = [
         {
           to = [
             {
-              operation = {
-                paths = var.protected_paths
-              }
+              operation = merge(
+                { paths = var.protected_paths },
+                length(var.protected_hosts) > 0 ? { hosts = var.protected_hosts } : {}
+              )
             }
           ]
         }
@@ -82,180 +53,63 @@ resource "kubernetes_manifest" "avp_authz_policy" {
     }
   }
 
-  depends_on = [kubernetes_config_map_v1_data.istio_mesh_config]
+  depends_on = [
+    kubernetes_config_map_v1_data.istio_mesh_config_pod,
+    kubernetes_config_map_v1_data.istio_mesh_config_lambda
+  ]
 }
 
 # ============================================================================
-# ServiceAccount with IAM Role (IRSA)
+# Authorization Policy - HTTPRoute targetRef (Istio 1.22+)
 # ============================================================================
+# This policy targets specific Services directly.
+# Requires backend pods to have Istio sidecar injected.
 
-resource "kubernetes_service_account_v1" "avp_ext_authz" {
-  metadata {
-    name      = "avp-ext-authz"
-    namespace = var.kubernetes_namespace
-    annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.avp_authorizer.arn
-    }
-    labels = {
-      app = "avp-ext-authz"
-    }
-  }
-}
+resource "kubernetes_manifest" "avp_authz_policy_httproute" {
+  for_each = var.httproute_policies
 
-# ============================================================================
-# Deployment - AVP Authorizer Pod (gRPC native)
-# ============================================================================
+  manifest = {
+    apiVersion = "security.istio.io/v1"
+    kind       = "AuthorizationPolicy"
 
-resource "kubernetes_deployment_v1" "avp_ext_authz" {
-  metadata {
-    name      = "avp-ext-authz"
-    namespace = var.kubernetes_namespace
-    labels = {
-      app       = "avp-ext-authz"
-      component = "authorization"
-    }
-  }
-
-  spec {
-    replicas = var.authorizer_replicas
-
-    selector {
-      match_labels = {
-        app = "avp-ext-authz"
+    metadata = {
+      name      = "avp-ext-authz-${each.key}"
+      namespace = coalesce(each.value.httproute_namespace, var.kubernetes_namespace)
+      labels = {
+        "app.kubernetes.io/managed-by" = "terraform"
+        "app.kubernetes.io/component"  = "authorization"
+        "policy-mode"                  = "httproute-targetref"
+        "policy-target"                = each.value.httproute_name
       }
     }
 
-    template {
-      metadata {
-        labels = {
-          app       = "avp-ext-authz"
-          component = "authorization"
-        }
-        annotations = {
-          # Disable Istio sidecar injection for the authorizer itself
-          "sidecar.istio.io/inject" = "false"
-        }
+    spec = {
+      targetRef = {
+        group = ""
+        kind  = "Service"
+        name  = each.value.httproute_name
       }
-
-      spec {
-        service_account_name = kubernetes_service_account_v1.avp_ext_authz.metadata[0].name
-
-        container {
-          name              = "authorizer"
-          image             = docker_registry_image.authorizer.name
-          image_pull_policy = "Always"
-
-          port {
-            name           = "http"
-            container_port = 9191
-            protocol       = "TCP"
-          }
-
-          env {
-            name  = "POLICY_STORE_ID"
-            value = aws_verifiedpermissions_policy_store.main.id
-          }
-
-          env {
-            name  = "AWS_REGION"
-            value = var.aws_region
-          }
-
-          env {
-            name  = "HTTP_PORT"
-            value = "9191"
-          }
-
-          env {
-            name  = "LOG_LEVEL"
-            value = var.log_level
-          }
-
-          resources {
-            requests = {
-              cpu    = "100m"
-              memory = "128Mi"
-            }
-            limits = {
-              cpu    = "500m"
-              memory = "256Mi"
-            }
-          }
-
-          liveness_probe {
-            http_get {
-              path = "/health"
-              port = 9191
-            }
-            initial_delay_seconds = 5
-            period_seconds        = 10
-          }
-
-          readiness_probe {
-            http_get {
-              path = "/health"
-              port = 9191
-            }
-            initial_delay_seconds = 3
-            period_seconds        = 5
-          }
-
-          security_context {
-            run_as_non_root            = true
-            run_as_user                = 1000
-            allow_privilege_escalation = false
-            capabilities {
-              drop = ["ALL"]
-            }
-          }
-        }
-
-        # Anti-affinity for HA
-        affinity {
-          pod_anti_affinity {
-            preferred_during_scheduling_ignored_during_execution {
-              weight = 100
-              pod_affinity_term {
-                label_selector {
-                  match_labels = {
-                    app = "avp-ext-authz"
-                  }
-                }
-                topology_key = "kubernetes.io/hostname"
-              }
-            }
-          }
-        }
+      action = "CUSTOM"
+      provider = {
+        name = "avp-ext-authz"
       }
+      rules = [
+        {
+          to = [
+            {
+              operation = merge(
+                { paths = each.value.paths },
+                length(each.value.methods) > 0 ? { methods = each.value.methods } : {}
+              )
+            }
+          ]
+        }
+      ]
     }
   }
-}
 
-# ============================================================================
-# Service
-# ============================================================================
-
-resource "kubernetes_service_v1" "avp_ext_authz" {
-  metadata {
-    name      = "avp-ext-authz"
-    namespace = var.kubernetes_namespace
-    labels = {
-      app = "avp-ext-authz"
-    }
-  }
-
-  spec {
-    type = "ClusterIP"
-
-    port {
-      name        = "http"
-      port        = 9191
-      target_port = 9191
-      protocol    = "TCP"
-    }
-
-    selector = {
-      app = "avp-ext-authz"
-    }
-  }
+  depends_on = [
+    kubernetes_config_map_v1_data.istio_mesh_config_pod,
+    kubernetes_config_map_v1_data.istio_mesh_config_lambda
+  ]
 }

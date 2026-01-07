@@ -108,10 +108,12 @@ resource "aws_verifiedpermissions_policy" "deny_expired_tokens" {
 }
 
 # ============================================================================
-# IAM Role for Pod (IRSA - IAM Roles for Service Accounts)
+# IAM Role for Pod (IRSA - IAM Roles for Service Accounts) - Pod mode only
 # ============================================================================
 
 resource "aws_iam_role" "avp_authorizer" {
+  count = var.authorizer_mode == "pod" ? 1 : 0
+
   name = "${local.name_prefix}-avp-authorizer"
 
   assume_role_policy = jsonencode({
@@ -137,8 +139,10 @@ resource "aws_iam_role" "avp_authorizer" {
 }
 
 resource "aws_iam_role_policy" "avp_authorizer" {
+  count = var.authorizer_mode == "pod" ? 1 : 0
+
   name = "${local.name_prefix}-avp-access"
-  role = aws_iam_role.avp_authorizer.id
+  role = aws_iam_role.avp_authorizer[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -156,10 +160,12 @@ resource "aws_iam_role_policy" "avp_authorizer" {
 }
 
 # ============================================================================
-# ECR Repository for Authorizer Image
+# ECR Repository for Authorizer Image (Pod mode only)
 # ============================================================================
 
 resource "aws_ecr_repository" "authorizer" {
+  count = var.authorizer_mode == "pod" ? 1 : 0
+
   name                 = "${local.name_prefix}-avp-authorizer"
   image_tag_mutability = "MUTABLE"
   force_delete         = true # Permite eliminar el repo incluso con imágenes
@@ -176,7 +182,9 @@ resource "aws_ecr_repository" "authorizer" {
 }
 
 resource "aws_ecr_lifecycle_policy" "authorizer" {
-  repository = aws_ecr_repository.authorizer.name
+  count = var.authorizer_mode == "pod" ? 1 : 0
+
+  repository = aws_ecr_repository.authorizer[0].name
 
   policy = jsonencode({
     rules = [
@@ -193,30 +201,18 @@ resource "aws_ecr_lifecycle_policy" "authorizer" {
           type = "expire"
         }
       }
-      # TODO: Habilitar cuando se defina el proceso de actualización de imágenes
-      # {
-      #   rulePriority = 2
-      #   description  = "Keep last 10 tagged images"
-      #   selection = {
-      #     tagStatus     = "tagged"
-      #     tagPrefixList = ["v", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
-      #     countType     = "imageCountMoreThan"
-      #     countNumber   = 10
-      #   }
-      #   action = {
-      #     type = "expire"
-      #   }
-      # }
     ]
   })
 }
 
 # ============================================================================
-# Docker Image Build & Push
+# Docker Image Build & Push (Pod mode only)
 # ============================================================================
 
 resource "docker_image" "authorizer" {
-  name = "${aws_ecr_repository.authorizer.repository_url}:${local.authorizer_version}"
+  count = var.authorizer_mode == "pod" ? 1 : 0
+
+  name = "${aws_ecr_repository.authorizer[0].repository_url}:${local.authorizer_version}"
 
   build {
     context    = "${path.module}/authorizer"
@@ -235,7 +231,9 @@ resource "docker_image" "authorizer" {
 }
 
 resource "docker_registry_image" "authorizer" {
-  name          = docker_image.authorizer.name
+  count = var.authorizer_mode == "pod" ? 1 : 0
+
+  name          = docker_image.authorizer[0].name
   keep_remotely = false # Elimina la imagen del registry en destroy
 
   depends_on = [aws_ecr_repository.authorizer]

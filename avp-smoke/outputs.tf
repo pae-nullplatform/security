@@ -12,35 +12,81 @@ output "policy_store_arn" {
   value       = aws_verifiedpermissions_policy_store.main.arn
 }
 
-# Identity source commented out for smoke test (no real OIDC provider)
-# output "identity_source_id" {
-#   description = "AVP Identity Source ID for JWT validation"
-#   value       = aws_verifiedpermissions_identity_source.jwt.id
-# }
+# ============================================================================
+# Authorizer Mode Outputs
+# ============================================================================
 
+output "authorizer_mode" {
+  description = "Current authorizer deployment mode"
+  value       = var.authorizer_mode
+}
+
+# Pod mode outputs
 output "iam_role_arn" {
-  description = "IAM Role ARN for the authorizer pod (IRSA)"
-  value       = aws_iam_role.avp_authorizer.arn
+  description = "IAM Role ARN for the authorizer pod (IRSA) - only in pod mode"
+  value       = var.authorizer_mode == "pod" ? aws_iam_role.avp_authorizer[0].arn : null
 }
 
 output "ecr_repository_url" {
-  description = "ECR repository URL for authorizer image"
-  value       = aws_ecr_repository.authorizer.repository_url
+  description = "ECR repository URL for authorizer image - only in pod mode"
+  value       = var.authorizer_mode == "pod" ? aws_ecr_repository.authorizer[0].repository_url : null
 }
 
 output "ext_authz_service" {
   description = "Kubernetes service name for ext-authz"
-  value       = "${kubernetes_service_v1.avp_ext_authz.metadata[0].name}.${var.kubernetes_namespace}.svc.cluster.local"
+  value = var.authorizer_mode == "pod" ? (
+    "${kubernetes_service_v1.avp_ext_authz[0].metadata[0].name}.${var.kubernetes_namespace}.svc.cluster.local"
+    ) : (
+    "${kubernetes_service_v1.lambda_ext_authz[0].metadata[0].name}.${var.kubernetes_namespace}.svc.cluster.local"
+  )
 }
 
 output "ext_authz_port" {
-  description = "gRPC port for ext-authz service"
-  value       = 9191
+  description = "Port for ext-authz service"
+  value       = var.authorizer_mode == "pod" ? 9191 : 443
 }
 
-output "protected_paths" {
-  description = "List of paths protected by AVP authorization"
-  value       = var.protected_paths
+# Lambda mode outputs
+output "lambda_function_arn" {
+  description = "Lambda function ARN - only in lambda mode"
+  value       = var.authorizer_mode == "lambda" ? aws_lambda_function.authorizer[0].arn : null
+}
+
+output "lambda_function_url" {
+  description = "Lambda Function URL - only in lambda mode"
+  value       = var.authorizer_mode == "lambda" ? aws_lambda_function_url.authorizer[0].function_url : null
+}
+
+output "lambda_iam_role_arn" {
+  description = "IAM Role ARN for the Lambda function - only in lambda mode"
+  value       = var.authorizer_mode == "lambda" ? aws_iam_role.lambda_authorizer[0].arn : null
+}
+
+# ============================================================================
+# HTTPRoute Policy Outputs
+# ============================================================================
+
+output "httproute_policies" {
+  description = "Map of HTTPRoute-based authorization policies created"
+  value = {
+    for key, policy in var.httproute_policies : key => {
+      policy_name         = "avp-ext-authz-${key}"
+      httproute_name      = policy.httproute_name
+      httproute_namespace = coalesce(policy.httproute_namespace, var.kubernetes_namespace)
+      paths               = policy.paths
+      methods             = policy.methods
+    }
+  }
+}
+
+output "authorization_config" {
+  description = "Authorization configuration summary"
+  value = {
+    authorizer_mode             = var.authorizer_mode
+    gateway_selector_enabled    = length(var.gateway_selector) > 0 && length(var.protected_paths) > 0
+    httproute_targetref_enabled = length(var.httproute_policies) > 0
+    httproute_policy_count      = length(var.httproute_policies)
+  }
 }
 
 # ============================================================================
@@ -48,59 +94,87 @@ output "protected_paths" {
 # ============================================================================
 
 output "build_instructions" {
-  description = "Instructions for building and deploying the authorizer"
-  value       = <<-EOT
+  description = "Instructions for the deployed authorizer"
+  value = <<-EOT
 
     ============================================================
-    Amazon Verified Permissions Authorization - Pod Version
+    Amazon Verified Permissions Authorization
     ============================================================
 
+    Authorizer Mode: ${upper(var.authorizer_mode)}
     Policy Store ID: ${aws_verifiedpermissions_policy_store.main.id}
-    ECR Repository:  ${aws_ecr_repository.authorizer.repository_url}
+    ${var.authorizer_mode == "pod" ? "ECR Repository:  ${aws_ecr_repository.authorizer[0].repository_url}" : "Lambda Function: ${aws_lambda_function.authorizer[0].function_name}"}
+    ${var.authorizer_mode == "lambda" ? "Function URL:    ${aws_lambda_function_url.authorizer[0].function_url}" : ""}
 
-    Protected Paths: ${join(", ", var.protected_paths)}
+    ============================================================
+    Authorization Modes
+    ============================================================
 
-    Build & Push Image:
-    -------------------
-    cd authorizer
+    1. Gateway Selector Mode (Legacy):
+       Status: ${length(var.gateway_selector) > 0 && length(var.protected_paths) > 0 ? "ENABLED" : "DISABLED"}
+       ${length(var.protected_paths) > 0 ? "Protected Paths: ${join(", ", var.protected_paths)}" : "No paths configured"}
 
-    # Login to ECR
-    aws ecr get-login-password --region ${var.aws_region} | \
-      docker login --username AWS --password-stdin ${aws_ecr_repository.authorizer.repository_url}
+    2. HTTPRoute targetRef Mode (Istio 1.22+):
+       Status: ${length(var.httproute_policies) > 0 ? "ENABLED" : "DISABLED"}
+       Policies: ${length(var.httproute_policies)} HTTPRoute(s) configured
+       ${length(var.httproute_policies) > 0 ? join("\n       ", [for k, v in var.httproute_policies : "- ${k}: ${v.httproute_name} -> ${join(", ", v.paths)}"]) : "No HTTPRoute policies configured"}
 
-    # Build and push
-    docker build -t ${aws_ecr_repository.authorizer.repository_url}:latest .
-    docker push ${aws_ecr_repository.authorizer.repository_url}:latest
+    ============================================================
+    Authorizer Details
+    ============================================================
+    ${var.authorizer_mode == "pod" ? <<-POD
+    Mode: Kubernetes Pod (in-cluster)
+    Service: avp-ext-authz.${var.kubernetes_namespace}.svc.cluster.local:9191
+    Replicas: ${var.authorizer_replicas}
 
-    # Update Terraform with image
-    # In terraform.tfvars:
-    # authorizer_image = "${aws_ecr_repository.authorizer.repository_url}:latest"
-
-    Testing Commands:
-    -----------------
-
-    1. Access root (no auth required for /):
-       curl -k https://hello.pae-infra.nullapps.io/
-
-    2. Access /smoke without token (should return 401):
-       curl -k https://hello.pae-infra.nullapps.io/smoke
-
-    3. Access /smoke with valid JWT (should return 200):
-       TOKEN="<your-jwt-token>"
-       curl -k -H "Authorization: Bearer $TOKEN" \
-         https://hello.pae-infra.nullapps.io/smoke
-
-    Debugging:
-    ----------
-    # Check authorizer pod logs
+    # View pod logs
     kubectl logs -n ${var.kubernetes_namespace} -l app=avp-ext-authz -f
 
     # Check pod status
     kubectl get pods -n ${var.kubernetes_namespace} -l app=avp-ext-authz
+    POD
+  : <<-LAMBDA
+    Mode: AWS Lambda (Function URL)
+    Function: ${aws_lambda_function.authorizer[0].function_name}
+    URL: ${aws_lambda_function_url.authorizer[0].function_url}
+    Memory: ${var.lambda_memory_size}MB
+    Timeout: ${var.lambda_timeout}s
 
-    # Test gRPC connectivity
-    kubectl run grpcurl --rm -it --image=fullstorydev/grpcurl -- \
-      -plaintext avp-ext-authz.${var.kubernetes_namespace}:9191 list
+    # View Lambda logs
+    aws logs tail /aws/lambda/${aws_lambda_function.authorizer[0].function_name} --follow
+
+    # Test Lambda directly
+    curl -X POST ${aws_lambda_function_url.authorizer[0].function_url}health
+    LAMBDA
+}
+
+    ============================================================
+    Testing Commands
+    ============================================================
+
+    1. Access root (no auth required for /):
+       curl -k https://hello.pae-infra.nullapps.io/
+
+    2. Access protected path without token (should return 401):
+       curl -k https://hello.pae-infra.nullapps.io/smoke
+
+    3. Access protected path with valid JWT (should return 200):
+       TOKEN="<your-jwt-token>"
+       curl -k -H "Authorization: Bearer $TOKEN" \
+         https://hello.pae-infra.nullapps.io/smoke
+
+    ============================================================
+    Debugging
+    ============================================================
+
+    # List all AuthorizationPolicies
+    kubectl get authorizationpolicies -n ${var.kubernetes_namespace}
+
+    # Check Istio extension providers
+    kubectl get cm istio -n istio-system -o yaml | grep -A20 extensionProviders
+
+    # Check Istio version (targetRef requires 1.22+)
+    kubectl get pods -n istio-system -l app=istiod -o jsonpath='{.items[0].spec.containers[0].image}'
 
     ============================================================
   EOT

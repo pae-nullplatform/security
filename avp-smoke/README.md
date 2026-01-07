@@ -4,353 +4,121 @@ Este modulo implementa autorizacion de endpoints usando Amazon Verified Permissi
 
 ## Modos de Deployment
 
-El authorizer soporta dos modos de deployment:
+El authorizer soporta tres modos de deployment:
 
-| Modo | Descripcion | Uso recomendado |
-|------|-------------|-----------------|
-| **Pod** | Deployment de Kubernetes in-cluster | Baja latencia, alto volumen |
-| **Lambda** | AWS Lambda con Function URL | Costo variable, serverless |
+| Modo | Arquitectura | Uso recomendado |
+|------|--------------|-----------------|
+| **lambda** (default) | Istio → ALB (HTTP) → Lambda | Serverless, bajo/medio volumen |
+| **lambda-proxy** | Istio → Nginx Pod → Lambda URL (HTTPS) | Sin costo ALB, latencia media |
+| **in-cluster** | Istio → Pod Authorizer | Alta performance, alto volumen |
 
 > Ver [COMPARATIVA.md](./COMPARATIVA.md) para un analisis detallado de cada modo.
 
 ## Arquitectura
 
-### Modo Pod (in-cluster)
+### Modo `lambda` (ALB → Lambda)
 
 ```
-+------------------------------------------------------------------+
-|                    Request Flow (Pod Mode)                        |
-+------------------------------------------------------------------+
-
-    Cliente HTTP
-         |
-         | Authorization: Bearer <JWT>
-         v
-    Istio Gateway
-         |
-         v
-    AuthorizationPolicy (CUSTOM)
-         |
-         v
-    AVP Ext-Authz Pod (Python:9191)
-         |
-         | IsAuthorized API
-         v
-    Amazon Verified Permissions
-         |
-         v
-    ALLOW / DENY
+Cliente HTTP
+     |
+     | Authorization: Bearer <JWT>
+     v
+Istio Gateway
+     |
+     v
+AuthorizationPolicy (CUSTOM)
+     |
+     v
+Internal ALB (HTTP:80)     <-- Workaround Istio #57676
+     |
+     v
+Lambda Function
+     |
+     | IsAuthorized API
+     v
+Amazon Verified Permissions
+     |
+     v
+ALLOW / DENY
 ```
 
-### Modo Lambda (serverless)
+### Modo `lambda-proxy` (Nginx → Lambda)
 
 ```
-+------------------------------------------------------------------+
-|                    Request Flow (Lambda Mode)                     |
-+------------------------------------------------------------------+
-
-    Cliente HTTP
-         |
-         | Authorization: Bearer <JWT>
-         v
-    Istio Gateway
-         |
-         v
-    AuthorizationPolicy (CUSTOM)
-         |
-         v
-    ServiceEntry + DestinationRule
-         |
-         | HTTPS (443)
-         v
-    Lambda Function URL
-         |
-         | IsAuthorized API
-         v
-    Amazon Verified Permissions
-         |
-         v
-    ALLOW / DENY
+Cliente HTTP
+     |
+     | Authorization: Bearer <JWT>
+     v
+Istio Gateway
+     |
+     v
+AuthorizationPolicy (CUSTOM)
+     |
+     v
+Nginx Proxy Pod (HTTP:80)
+     |
+     | HTTPS (443)
+     v
+Lambda Function URL
+     |
+     | IsAuthorized API
+     v
+Amazon Verified Permissions
+     |
+     v
+ALLOW / DENY
 ```
 
-## Modos de AuthorizationPolicy
+### Modo `in-cluster` (Pod directo)
 
-El modulo soporta dos formas de aplicar las policies de autorizacion:
+```
+Cliente HTTP
+     |
+     | Authorization: Bearer <JWT>
+     v
+Istio Gateway
+     |
+     v
+AuthorizationPolicy (CUSTOM)
+     |
+     v
+AVP Ext-Authz Pod (HTTP:9191)
+     |
+     | IsAuthorized API
+     v
+Amazon Verified Permissions
+     |
+     v
+ALLOW / DENY
+```
 
-### 1. Gateway Selector (Legacy)
+## Configuracion Rapida
 
-Aplica la policy a todos los paths del gateway usando labels:
+### terraform.tfvars
 
 ```hcl
-gateway_selector = {
-  "gateway.networking.k8s.io/gateway-name" = "gateway-public"
-}
-protected_paths = ["/smoke/*", "/api/*"]
-```
-
-### 2. HTTPRoute targetRef (Istio 1.22+)
-
-Aplica la policy directamente a HTTPRoutes especificos:
-
-```hcl
-httproute_policies = {
-  my-service = {
-    httproute_name = "my-service"
-    paths          = ["/smoke", "/smoke/*", "/api/*"]
-    methods        = ["GET", "POST"]
-  }
-}
-```
-
-> **Recomendado:** HTTPRoute targetRef para control granular por servicio.
-
-## Componentes
-
-### 1. Amazon Verified Permissions (AVP)
-
-```
-+------------------------------------------------------------------+
-|                    AVP Policy Store                               |
-+------------------------------------------------------------------+
-|                                                                   |
-|  +-------------------+  +-------------------+  +----------------+ |
-|  |      Schema       |  |     Policies      |  | Identity Source| |
-|  +-------------------+  +-------------------+  +----------------+ |
-|  |                   |  |                   |  |                | |
-|  | - User            |  | - allow_auth_read |  | (Comentado     | |
-|  | - Group           |  | - allow_smoke     |  |  para smoke    | |
-|  | - Resource        |  | - deny_expired    |  |  test)         | |
-|  | - Actions (CRUD)  |  |                   |  |                | |
-|  +-------------------+  +-------------------+  +----------------+ |
-+------------------------------------------------------------------+
-```
-
-### 2. AVP Authorizer (Pod o Lambda)
-
-```
-+------------------------------------------------------------------+
-|                    AVP Authorizer Logic                           |
-+------------------------------------------------------------------+
-|                                                                   |
-|  1. Extract JWT from Authorization header                         |
-|  2. Decode payload (base64, no signature verification)            |
-|  3. Check token expiration locally                                |
-|  4. Extract user (sub) and groups                                 |
-|  5. Build AVP entities (User, Group, Resource)                    |
-|  6. Call IsAuthorized API                                         |
-|  7. Return ALLOW (200) or DENY (401/403)                          |
-|                                                                   |
-|  Headers retornados:                                              |
-|  - x-user-id: Subject del token                                   |
-|  - x-avp-decision: ALLOW o DENY                                   |
-|  - x-validated-by: amazon-verified-permissions                    |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-### 3. Istio Integration
-
-```
-+------------------------------------------------------------------+
-|                  Istio Configuration                              |
-+------------------------------------------------------------------+
-|                                                                   |
-|  ConfigMap: istio (istio-system)                                 |
-|  +------------------------------------------------------------+  |
-|  | extensionProviders:                                         |  |
-|  | - name: avp-ext-authz                                       |  |
-|  |   envoyExtAuthzHttp:                                        |  |
-|  |     service: <pod-service o lambda-externalname>            |  |
-|  |     port: 9191 (pod) o 443 (lambda)                         |  |
-|  |     includeRequestHeadersInCheck:                           |  |
-|  |       - authorization                                       |  |
-|  |       - x-forwarded-for                                     |  |
-|  |     includeAdditionalHeadersInCheck:                        |  |
-|  |       x-original-method: "%REQ(:METHOD)%"                   |  |
-|  |       x-original-uri: "%REQ(:PATH)%"                        |  |
-|  |       x-original-host: "%REQ(:AUTHORITY)%"                  |  |
-|  +------------------------------------------------------------+  |
-|                                                                   |
-|  AuthorizationPolicy (HTTPRoute targetRef - Istio 1.22+)         |
-|  +------------------------------------------------------------+  |
-|  | spec:                                                       |  |
-|  |   targetRef:                                                |  |
-|  |     group: gateway.networking.k8s.io                        |  |
-|  |     kind: HTTPRoute                                         |  |
-|  |     name: my-httproute                                      |  |
-|  |   action: CUSTOM                                            |  |
-|  |   provider:                                                 |  |
-|  |     name: avp-ext-authz                                     |  |
-|  +------------------------------------------------------------+  |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-## Politicas Cedar
-
-### Schema (`schema.json`)
-
-```
-+------------------------------------------------------------------+
-|                      Cedar Schema                                 |
-+------------------------------------------------------------------+
-|                                                                   |
-|  Namespace: ApiAccess                                            |
-|                                                                   |
-|  +-------------------+  +-------------------+  +----------------+ |
-|  |   Entity: User    |  |  Entity: Group    |  | Entity: Resource|
-|  +-------------------+  +-------------------+  +----------------+ |
-|  | Attributes:       |  | Attributes:       |  | Attributes:    | |
-|  | - sub (String)    |  | - name (String)   |  | - path (String)| |
-|  | - iss (String)    |  |                   |  | - method (Str) | |
-|  | - email (String?) |  | memberOfTypes: [] |  | - host (String)| |
-|  | - exp (Long?)     |  |                   |  |                | |
-|  | - iat (Long?)     |  +-------------------+  +----------------+ |
-|  |                   |                                           |
-|  | memberOfTypes:    |                                           |
-|  |   - Group         |                                           |
-|  +-------------------+                                           |
-|                                                                   |
-|  Actions: GET, POST, PUT, DELETE, PATCH                          |
-|  - appliesTo: User/Group -> Resource                             |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-### Politicas
-
-#### `allow_authenticated_read.cedar`
-```cedar
-// Permite GET a cualquier usuario autenticado
-permit (
-    principal,
-    action == ApiAccess::Action::"GET",
-    resource
-);
-```
-
-#### `allow_smoke_access.cedar`
-```cedar
-// Permite GET/POST solo a usuarios del grupo smoke-testers
-permit (
-    principal in ApiAccess::Group::"smoke-testers",
-    action in [ApiAccess::Action::"GET", ApiAccess::Action::"POST"],
-    resource
-);
-```
-
-## Matriz de Autorizacion
-
-```
-+------------------------------------------------------------------+
-|                   Authorization Matrix                            |
-+------------------------------------------------------------------+
-|                                                                   |
-|  Endpoint: /smoke/*                                              |
-|  +------------------+-------+-------+-------+-------+-------+    |
-|  | Principal/Action | GET   | POST  | PUT   | DELETE| PATCH |    |
-|  +------------------+-------+-------+-------+-------+-------+    |
-|  | No token         | 401   | 401   | 401   | 401   | 401   |    |
-|  | Token expirado   | 401   | 401   | 401   | 401   | 401   |    |
-|  | User (any group) | 200   | 403   | 403   | 403   | 403   |    |
-|  | smoke-testers    | 200   | 200   | 403   | 403   | 403   |    |
-|  +------------------+-------+-------+-------+-------+-------+    |
-|                                                                   |
-+------------------------------------------------------------------+
-```
-
-## Estructura de Archivos
-
-```
-avp-smoke/
-├── main.tf                    # Policy Store, Schema, Policies, IAM, ECR
-├── lambda.tf                  # Lambda function, Function URL, IAM
-├── authorization_policy.tf    # Istio config (Pod/Lambda), AuthzPolicy
-├── variables.tf               # Variables de configuracion
-├── outputs.tf                 # Outputs del modulo
-├── providers.tf               # AWS, Kubernetes, Docker, Archive providers
-├── backend.tf                 # Backend S3
-├── terraform.tfvars           # Valores de variables
-├── schema.json                # Schema Cedar para AVP
-├── policies/                  # Politicas Cedar
-│   ├── allow_authenticated_read.cedar
-│   ├── allow_smoke_access.cedar
-│   └── deny_expired_tokens.cedar
-├── authorizer/                # Codigo del autorizador
-│   ├── server.py              # HTTP server Python (Pod mode)
-│   ├── lambda_handler.py      # Lambda handler Python (Lambda mode)
-│   ├── Dockerfile             # Imagen Docker (Pod mode)
-│   └── requirements.txt       # Dependencias Python
-├── COMPARATIVA.md             # Comparativa Pod vs Lambda
-└── test-tokens.txt            # Tokens JWT para pruebas
-```
-
-## Configuracion
-
-### Variables Principales
-
-| Variable | Descripcion | Default |
-|----------|-------------|---------|
-| `authorizer_mode` | Modo de deployment: "pod" o "lambda" | "pod" |
-| `project` | Nombre del proyecto | - |
-| `environment` | Ambiente | - |
-| `aws_region` | Region de AWS | - |
-| `eks_cluster_name` | Nombre del cluster EKS | - |
-| `kubernetes_namespace` | Namespace para recursos | - |
-
-### Variables HTTPRoute
-
-| Variable | Descripcion | Default |
-|----------|-------------|---------|
-| `httproute_policies` | Map de policies por HTTPRoute | {} |
-| `gateway_selector` | Labels del gateway (legacy) | {} |
-| `protected_paths` | Paths a proteger (legacy) | [] |
-
-### Variables Pod Mode
-
-| Variable | Descripcion | Default |
-|----------|-------------|---------|
-| `authorizer_replicas` | Numero de replicas | 2 |
-| `log_level` | Nivel de logs | "INFO" |
-
-### Variables Lambda Mode
-
-| Variable | Descripcion | Default |
-|----------|-------------|---------|
-| `lambda_memory_size` | Memoria en MB | 256 |
-| `lambda_timeout` | Timeout en segundos | 10 |
-| `lambda_reserved_concurrency` | Concurrencia reservada (-1 = sin reserva) | -1 |
-
-## Despliegue
-
-### Configuracion minima (Lambda + HTTPRoute)
-
-```hcl
-# terraform.tfvars
 project              = "my-project"
 environment          = "dev"
 aws_region           = "us-east-1"
 eks_cluster_name     = "my-cluster"
 kubernetes_namespace = "gateways"
 
-# Authorizer mode
-authorizer_mode = "lambda"
-
-# HTTPRoute policies
-httproute_policies = {
-  my-service = {
-    httproute_name = "my-service"
-    paths          = ["/api/*"]
-    methods        = ["GET", "POST"]
-  }
+# Selector del gateway
+gateway_selector = {
+  "gateway.networking.k8s.io/gateway-name" = "gateway-public"
 }
+
+# Hosts y paths protegidos
+protected_hosts = ["api.example.com"]
+protected_paths = ["/api/*", "/admin/*"]
+
+# Modo de deployment (ver COMPARATIVA.md para elegir)
+authorizer_mode = "lambda"  # "lambda", "lambda-proxy", o "in-cluster"
 ```
 
 ### Comandos
 
 ```bash
-cd security/avp-smoke
-
 # Inicializar
 tofu init
 
@@ -361,53 +129,103 @@ tofu plan
 tofu apply
 ```
 
-## Agregar Nuevos Servicios
+## Variables Principales
 
-Para proteger un nuevo HTTPRoute:
+### Configuracion General
 
-```hcl
-httproute_policies = {
-  # Servicio existente
-  nginx-hello = {
-    httproute_name = "nginx-hello"
-    paths          = ["/smoke", "/smoke/*"]
-    methods        = ["GET", "POST"]
-  }
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `authorizer_mode` | Modo: "lambda", "lambda-proxy", "in-cluster" | "lambda" |
+| `project` | Nombre del proyecto | - |
+| `environment` | Ambiente | - |
+| `aws_region` | Region de AWS | - |
+| `eks_cluster_name` | Nombre del cluster EKS | - |
+| `kubernetes_namespace` | Namespace para recursos | - |
 
-  # Nuevo servicio
-  api-users = {
-    httproute_name = "api-users"
-    paths          = ["/users", "/users/*"]
-    methods        = ["GET", "POST", "PUT", "DELETE"]
-  }
-}
+### Configuracion de Seguridad
+
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `gateway_selector` | Labels del gateway Istio | {} |
+| `protected_hosts` | Hosts a proteger | [] |
+| `protected_paths` | Paths a proteger | [] |
+| `httproute_policies` | Policies por HTTPRoute (Istio 1.22+) | {} |
+
+### Configuracion Lambda (modos `lambda` y `lambda-proxy`)
+
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `lambda_memory_size` | Memoria en MB | 256 |
+| `lambda_timeout` | Timeout en segundos | 10 |
+| `lambda_reserved_concurrency` | Concurrencia reservada (-1 = sin reserva) | -1 |
+| `log_level` | Nivel de logs (DEBUG, INFO, WARNING, ERROR) | INFO |
+
+### Configuracion Pod (modos `in-cluster` y `lambda-proxy`)
+
+| Variable | Descripcion | Default |
+|----------|-------------|---------|
+| `authorizer_replicas` | Numero de replicas | 2 |
+
+## Estructura de Archivos
+
 ```
-
-Luego aplicar:
-```bash
-tofu apply
+avp-smoke/
+├── main.tf                           # Policy Store, Schema, Policies, IAM (in-cluster), ECR
+├── lambda.tf                         # Lambda function (lambda y lambda-proxy)
+├── lambda_alb.tf                     # ALB interno (solo lambda)
+├── authorization_policy.tf           # ConfigMap Istio (todos los modos)
+├── authorization_policy_in_cluster.tf    # Recursos in-cluster
+├── authorization_policy_lambda.tf        # Recursos lambda (ALB)
+├── authorization_policy_lambda_proxy.tf  # Recursos lambda-proxy (Nginx)
+├── variables.tf                      # Variables de configuracion
+├── outputs.tf                        # Outputs del modulo
+├── providers.tf                      # AWS, Kubernetes, Docker providers
+├── backend.tf                        # Backend S3
+├── terraform.tfvars                  # Valores de variables
+├── schema.json                       # Schema Cedar para AVP
+├── policies/                         # Politicas Cedar
+│   ├── allow_authenticated_read.cedar
+│   ├── allow_smoke_access.cedar
+│   └── deny_expired_tokens.cedar
+├── authorizer/                       # Codigo del autorizador
+│   ├── server.py                     # HTTP server (in-cluster)
+│   ├── lambda_handler.py             # Lambda handler (lambda/lambda-proxy)
+│   ├── Dockerfile                    # Imagen Docker (in-cluster)
+│   └── requirements.txt              # Dependencias Python
+├── COMPARATIVA.md                    # Comparativa detallada de modos
+└── test-tokens.txt                   # Tokens JWT para pruebas
 ```
 
 ## Debugging
 
-### Pod Mode
+### Modo `lambda`
 
 ```bash
-# Logs
-kubectl logs -n <namespace> -l app=avp-ext-authz -f
-
-# Status
-kubectl get pods -n <namespace> -l app=avp-ext-authz
-```
-
-### Lambda Mode
-
-```bash
-# Logs
+# Logs de Lambda
 aws logs tail /aws/lambda/<project>-<env>-avp-authorizer --follow
 
-# Test directo
-curl https://<function-url>/health
+# Estado del ALB
+aws elbv2 describe-target-health --target-group-arn <arn>
+```
+
+### Modo `lambda-proxy`
+
+```bash
+# Logs del nginx proxy
+kubectl logs -n <namespace> -l app=avp-nginx-proxy -f
+
+# Logs de Lambda
+aws logs tail /aws/lambda/<project>-<env>-avp-authorizer --follow
+```
+
+### Modo `in-cluster`
+
+```bash
+# Logs del pod
+kubectl logs -n <namespace> -l app=avp-ext-authz -f
+
+# Estado de pods
+kubectl get pods -n <namespace> -l app=avp-ext-authz
 ```
 
 ### Istio
@@ -418,9 +236,6 @@ kubectl get authorizationpolicies -n <namespace>
 
 # Extension providers
 kubectl get cm istio -n istio-system -o yaml | grep -A20 extensionProviders
-
-# Version (HTTPRoute targetRef requiere 1.22+)
-kubectl get pods -n istio-system -l app=istiod -o jsonpath='{.items[0].spec.containers[0].image}'
 ```
 
 ## Outputs
@@ -428,8 +243,23 @@ kubectl get pods -n istio-system -l app=istiod -o jsonpath='{.items[0].spec.cont
 | Output | Descripcion |
 |--------|-------------|
 | `policy_store_id` | ID del Policy Store de AVP |
-| `authorizer_mode` | Modo actual (pod/lambda) |
-| `lambda_function_url` | URL de Lambda (solo lambda mode) |
-| `ecr_repository_url` | URL del ECR (solo pod mode) |
+| `authorizer_mode` | Modo actual |
+| `lambda_function_url` | URL de Lambda (lambda/lambda-proxy) |
+| `lambda_alb_dns` | DNS del ALB interno (solo lambda) |
+| `ecr_repository_url` | URL del ECR (solo in-cluster) |
 | `ext_authz_service` | FQDN del servicio ext-authz |
-| `httproute_policies` | Policies de HTTPRoute creadas |
+
+## Migracion entre Modos
+
+Cambiar de modo es simple - solo actualizar `authorizer_mode`:
+
+```hcl
+# Cambiar de lambda a lambda-proxy
+authorizer_mode = "lambda-proxy"
+```
+
+```bash
+tofu apply
+```
+
+> **Nota:** Durante la transicion habra un breve periodo donde las requests pueden fallar. Planificar en ventana de mantenimiento.

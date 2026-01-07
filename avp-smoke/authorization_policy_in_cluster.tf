@@ -1,54 +1,19 @@
 # ============================================================================
-# Istio Authorization - Pod Mode Configuration
+# Istio Authorization - In-Cluster Mode Configuration
 # ============================================================================
 # This file contains all resources specific to running the AVP authorizer
-# as a Kubernetes Pod within the cluster.
+# as a Kubernetes Pod within the cluster (in-cluster mode).
+#
+# Note: The Istio mesh config (extensionProviders) is now consolidated in
+# authorization_policy.tf to prevent empty configmap during mode switches.
 # ============================================================================
 
 # ============================================================================
-# Extension Provider Configuration - Pod Mode
-# ============================================================================
-
-resource "kubernetes_config_map_v1_data" "istio_mesh_config_pod" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
-
-  metadata {
-    name      = "istio"
-    namespace = "istio-system"
-  }
-
-  data = {
-    mesh = <<-EOF
-      extensionProviders:
-      - name: avp-ext-authz
-        envoyExtAuthzHttp:
-          service: avp-ext-authz.${var.kubernetes_namespace}.svc.cluster.local
-          port: 9191
-          includeRequestHeadersInCheck:
-          - authorization
-          - x-forwarded-for
-          includeAdditionalHeadersInCheck:
-            x-original-method: "%REQ(:METHOD)%"
-            x-original-uri: "%REQ(:PATH)%"
-            x-original-host: "%REQ(:AUTHORITY)%"
-          headersToUpstreamOnAllow:
-          - x-user-id
-          - x-avp-decision
-          - x-validated-by
-          headersToDownstreamOnDeny:
-          - x-avp-decision
-    EOF
-  }
-
-  force = true
-}
-
-# ============================================================================
-# ServiceAccount with IAM Role (IRSA) - Pod mode only
+# ServiceAccount with IAM Role (IRSA) - in-cluster mode only
 # ============================================================================
 
 resource "kubernetes_service_account_v1" "avp_ext_authz" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   metadata {
     name      = "avp-ext-authz"
@@ -67,7 +32,7 @@ resource "kubernetes_service_account_v1" "avp_ext_authz" {
 # ============================================================================
 
 resource "kubernetes_deployment_v1" "avp_ext_authz" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   metadata {
     name      = "avp-ext-authz"
@@ -192,11 +157,11 @@ resource "kubernetes_deployment_v1" "avp_ext_authz" {
 }
 
 # ============================================================================
-# Service - Pod mode
+# Service - in-cluster mode
 # ============================================================================
 
 resource "kubernetes_service_v1" "avp_ext_authz" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   metadata {
     name      = "avp-ext-authz"

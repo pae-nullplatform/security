@@ -1,15 +1,23 @@
 # ============================================================================
 # Lambda Authorizer Resources
 # ============================================================================
-# These resources are only created when authorizer_mode = "lambda"
+# These resources are created when authorizer_mode = "lambda" or "lambda-proxy"
+# Both modes use Lambda, but differ in how Istio connects to it:
+# - "lambda": Uses internal ALB (HTTP) → Lambda
+# - "lambda-proxy": Uses nginx proxy pod → Lambda Function URL (HTTPS)
 # ============================================================================
+
+locals {
+  # Lambda is needed for both lambda and lambda-proxy modes
+  use_lambda_function = contains(["lambda", "lambda-proxy"], var.authorizer_mode)
+}
 
 # ============================================================================
 # IAM Role for Lambda
 # ============================================================================
 
 resource "aws_iam_role" "lambda_authorizer" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   name = "${local.name_prefix}-avp-lambda-authorizer"
 
@@ -30,7 +38,7 @@ resource "aws_iam_role" "lambda_authorizer" {
 }
 
 resource "aws_iam_role_policy" "lambda_avp_access" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   name = "${local.name_prefix}-avp-access"
   role = aws_iam_role.lambda_authorizer[0].id
@@ -51,7 +59,7 @@ resource "aws_iam_role_policy" "lambda_avp_access" {
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   role       = aws_iam_role.lambda_authorizer[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -62,7 +70,7 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
 # ============================================================================
 
 resource "aws_cloudwatch_log_group" "lambda_authorizer" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   name              = "/aws/lambda/${local.name_prefix}-avp-authorizer"
   retention_in_days = 14
@@ -75,7 +83,7 @@ resource "aws_cloudwatch_log_group" "lambda_authorizer" {
 # ============================================================================
 
 data "archive_file" "lambda_authorizer" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   type        = "zip"
   output_path = "${path.module}/.terraform/lambda_authorizer.zip"
@@ -91,7 +99,7 @@ data "archive_file" "lambda_authorizer" {
 # ============================================================================
 
 resource "aws_lambda_function" "authorizer" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   function_name = "${local.name_prefix}-avp-authorizer"
   description   = "AVP Authorizer for Istio ext-authz"
@@ -127,7 +135,7 @@ resource "aws_lambda_function" "authorizer" {
 # ============================================================================
 
 resource "aws_lambda_function_url" "authorizer" {
-  count = var.authorizer_mode == "lambda" ? 1 : 0
+  count = local.use_lambda_function ? 1 : 0
 
   function_name      = aws_lambda_function.authorizer[0].function_name
   authorization_type = "NONE" # Istio handles authentication via headers
@@ -147,7 +155,7 @@ resource "aws_lambda_function_url" "authorizer" {
 # version, uncomment and configure this layer.
 #
 # resource "aws_lambda_layer_version" "boto3" {
-#   count = var.authorizer_mode == "lambda" ? 1 : 0
+#   count = local.use_lambda_function ? 1 : 0
 #
 #   layer_name          = "${local.name_prefix}-boto3"
 #   compatible_runtimes = ["python3.12"]

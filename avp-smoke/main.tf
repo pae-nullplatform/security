@@ -108,11 +108,11 @@ resource "aws_verifiedpermissions_policy" "deny_expired_tokens" {
 }
 
 # ============================================================================
-# IAM Role for Pod (IRSA - IAM Roles for Service Accounts) - Pod mode only
+# IAM Role for Pod (IRSA - IAM Roles for Service Accounts) - in-cluster mode only
 # ============================================================================
 
 resource "aws_iam_role" "avp_authorizer" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   name = "${local.name_prefix}-avp-authorizer"
 
@@ -139,7 +139,7 @@ resource "aws_iam_role" "avp_authorizer" {
 }
 
 resource "aws_iam_role_policy" "avp_authorizer" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   name = "${local.name_prefix}-avp-access"
   role = aws_iam_role.avp_authorizer[0].id
@@ -160,11 +160,11 @@ resource "aws_iam_role_policy" "avp_authorizer" {
 }
 
 # ============================================================================
-# ECR Repository for Authorizer Image (Pod mode only)
+# ECR Repository for Authorizer Image (in-cluster mode only)
 # ============================================================================
 
 resource "aws_ecr_repository" "authorizer" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   name                 = "${local.name_prefix}-avp-authorizer"
   image_tag_mutability = "MUTABLE"
@@ -182,7 +182,7 @@ resource "aws_ecr_repository" "authorizer" {
 }
 
 resource "aws_ecr_lifecycle_policy" "authorizer" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   repository = aws_ecr_repository.authorizer[0].name
 
@@ -206,11 +206,11 @@ resource "aws_ecr_lifecycle_policy" "authorizer" {
 }
 
 # ============================================================================
-# Docker Image Build & Push (Pod mode only)
+# Docker Image Build & Push (in-cluster mode only)
 # ============================================================================
 
 resource "docker_image" "authorizer" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   name = "${aws_ecr_repository.authorizer[0].repository_url}:${local.authorizer_version}"
 
@@ -231,7 +231,7 @@ resource "docker_image" "authorizer" {
 }
 
 resource "docker_registry_image" "authorizer" {
-  count = var.authorizer_mode == "pod" ? 1 : 0
+  count = var.authorizer_mode == "in-cluster" ? 1 : 0
 
   name          = docker_image.authorizer[0].name
   keep_remotely = false # Elimina la imagen del registry en destroy

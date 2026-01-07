@@ -1,8 +1,12 @@
 """
 Amazon Verified Permissions Lambda Authorizer for Istio ext-authz
 
-This Lambda function implements the authorization logic for Istio ext-authz
-using AWS Lambda Function URL as the HTTP endpoint.
+This Lambda function implements the authorization logic for Istio ext-authz.
+Supports both ALB and Lambda Function URL as HTTP endpoints.
+
+Architecture:
+- ALB mode: Istio Gateway -> HTTP:80 -> Internal ALB -> Lambda (ALB event format)
+- Function URL mode: Direct HTTPS to Lambda Function URL (not supported by Istio ext_authz)
 """
 
 import logging
@@ -31,6 +35,11 @@ boto_config = Config(
 avp_client = boto3.client("verifiedpermissions", config=boto_config)
 
 
+def is_alb_event(event: dict) -> bool:
+    """Check if the event is from ALB (vs Lambda Function URL)."""
+    return "requestContext" in event and "elb" in event.get("requestContext", {})
+
+
 def decode_jwt_payload(token: str) -> dict:
     """Decode JWT payload without verification (for extracting claims)."""
     try:
@@ -51,8 +60,12 @@ def decode_jwt_payload(token: str) -> dict:
         return {}
 
 
-def build_response(status_code: int, message: str = "", headers: dict = None) -> dict:
-    """Build Lambda Function URL response."""
+def build_response(status_code: int, message: str = "", headers: dict = None, is_alb: bool = False) -> dict:
+    """
+    Build response for either ALB or Lambda Function URL.
+
+    ALB format requires statusDescription, Lambda Function URL doesn't.
+    """
     response_headers = {
         "Content-Type": "text/plain",
         "x-avp-decision": "DENY" if status_code >= 400 else "ALLOW"
@@ -60,25 +73,38 @@ def build_response(status_code: int, message: str = "", headers: dict = None) ->
     if headers:
         response_headers.update(headers)
 
-    return {
+    response = {
         "statusCode": status_code,
         "headers": response_headers,
         "body": message
     }
+
+    # ALB requires statusDescription
+    if is_alb:
+        status_descriptions = {
+            200: "200 OK",
+            401: "401 Unauthorized",
+            403: "403 Forbidden",
+            500: "500 Internal Server Error",
+            503: "503 Service Unavailable"
+        }
+        response["statusDescription"] = status_descriptions.get(status_code, f"{status_code} Unknown")
+        response["isBase64Encoded"] = False
+
+    return response
 
 
 def handler(event: dict, context) -> dict:
     """
     Lambda handler for ext-authz requests.
 
-    Lambda Function URL sends events in the following format:
+    Supports two event formats:
+
+    1. ALB Event Format:
     {
-        "requestContext": {
-            "http": {
-                "method": "GET",
-                "path": "/check"
-            }
-        },
+        "requestContext": {"elb": {"targetGroupArn": "..."}},
+        "httpMethod": "GET",
+        "path": "/",
         "headers": {
             "authorization": "Bearer ...",
             "x-original-method": "GET",
@@ -86,24 +112,50 @@ def handler(event: dict, context) -> dict:
             "x-original-host": "api.example.com"
         }
     }
+
+    2. Lambda Function URL Format:
+    {
+        "requestContext": {"http": {"method": "GET", "path": "/"}},
+        "headers": {...}
+    }
     """
     start_time = time.time()
 
-    # Health check
-    request_context = event.get("requestContext", {})
-    http_info = request_context.get("http", {})
-    request_path = http_info.get("path", event.get("rawPath", "/"))
+    # Detect event source
+    alb_mode = is_alb_event(event)
+    logger.debug(f"Event source: {'ALB' if alb_mode else 'Function URL'}")
 
+    # Extract path based on event format
+    if alb_mode:
+        # ALB format
+        request_path = event.get("path", "/")
+        http_method = event.get("httpMethod", "GET")
+    else:
+        # Lambda Function URL format
+        request_context = event.get("requestContext", {})
+        http_info = request_context.get("http", {})
+        request_path = http_info.get("path", event.get("rawPath", "/"))
+        http_method = http_info.get("method", "GET")
+
+    # Health check - explicit path
     if request_path in ["/health", "/healthz"]:
-        return build_response(200, "OK")
+        return build_response(200, "OK", is_alb=alb_mode)
 
     try:
-        # Extract headers (Lambda Function URL lowercases headers)
+        # Extract headers (both ALB and Function URL lowercase headers)
         headers = event.get("headers", {})
+
+        # ALB Health Check Detection
+        # ALB health checks don't include x-original-* headers that Istio sends
+        # If we're in ALB mode and there's no x-original-method header, it's a health check
+        is_health_check = alb_mode and "x-original-method" not in headers
+        if is_health_check:
+            logger.debug("ALB health check detected (no x-original-method header)")
+            return build_response(200, "OK", is_alb=True)
 
         # Extract request attributes from headers
         # Envoy/Istio sends the original request info in headers
-        method = headers.get("x-original-method", http_info.get("method", "GET"))
+        method = headers.get("x-original-method", http_method)
         path = headers.get("x-original-uri", request_path)
         host = headers.get("x-original-host", headers.get("host", ""))
 
@@ -118,12 +170,12 @@ def handler(event: dict, context) -> dict:
 
         if not auth_header:
             logger.warning("Missing Authorization header")
-            return build_response(401, "Authorization header required")
+            return build_response(401, "Authorization header required", is_alb=alb_mode)
 
         # Extract Bearer token
         if not auth_header.lower().startswith("bearer "):
             logger.warning("Invalid Authorization header format")
-            return build_response(401, "Bearer token required")
+            return build_response(401, "Bearer token required", is_alb=alb_mode)
 
         token = auth_header[7:]  # Remove "Bearer " prefix
 
@@ -131,13 +183,13 @@ def handler(event: dict, context) -> dict:
         token_payload = decode_jwt_payload(token)
         if not token_payload:
             logger.warning("Failed to decode JWT payload")
-            return build_response(401, "Invalid token format")
+            return build_response(401, "Invalid token format", is_alb=alb_mode)
 
         # Check expiration locally (defense in depth)
         exp = token_payload.get("exp")
         if exp and int(exp) < int(time.time()):
             logger.warning(f"Token expired at {exp}")
-            return build_response(401, "Token expired")
+            return build_response(401, "Token expired", is_alb=alb_mode)
 
         subject = token_payload.get("sub", "unknown")
         logger.info(f"Token subject: {subject}")
@@ -222,7 +274,7 @@ def handler(event: dict, context) -> dict:
                     "x-user-id": subject,
                     "x-avp-decision": "ALLOW",
                     "x-validated-by": "amazon-verified-permissions"
-                })
+                }, is_alb=alb_mode)
             else:
                 determining_policies = avp_response.get("determiningPolicies", [])
                 errors = avp_response.get("errors", [])
@@ -232,15 +284,16 @@ def handler(event: dict, context) -> dict:
                 if errors:
                     logger.warning(f"AVP errors: {errors}")
 
-                return build_response(403, "Access denied by policy")
+                return build_response(403, "Access denied by policy", is_alb=alb_mode)
 
         except avp_client.exceptions.ValidationException as e:
             logger.error(f"AVP validation error: {e}")
-            return build_response(401, "Token validation failed")
+            return build_response(401, "Token validation failed", is_alb=alb_mode)
         except Exception as e:
             logger.error(f"AVP error: {e}")
-            return build_response(500, "Authorization service error")
+            return build_response(500, "Authorization service error", is_alb=alb_mode)
 
     except Exception as e:
         logger.error(f"Check error: {e}")
-        return build_response(500, "Internal authorization error")
+        # alb_mode is defined at the start of handler, before any exceptions
+        return build_response(500, "Internal authorization error", is_alb=alb_mode)

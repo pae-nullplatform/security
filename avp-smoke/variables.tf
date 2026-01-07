@@ -97,18 +97,24 @@ variable "httproute_policies" {
 # ============================================================================
 
 variable "authorizer_mode" {
-  description = "Deployment mode for the authorizer: 'pod' (Kubernetes) or 'lambda' (AWS Lambda with Function URL)"
+  description = <<-EOT
+    Deployment mode for the authorizer:
+    - "lambda" (default): Uses internal ALB (HTTP) → Lambda. Best for serverless, cost-effective at low traffic.
+    - "lambda-proxy": Deploys nginx proxy pod in cluster that forwards HTTP to Lambda Function URL (HTTPS).
+                      No ALB cost, lower latency than ALB mode.
+    - "in-cluster": Deploys the authorizer directly as a Kubernetes Pod. Best for high traffic, lowest latency.
+  EOT
   type        = string
-  default     = "pod"
+  default     = "lambda"
 
   validation {
-    condition     = contains(["pod", "lambda"], var.authorizer_mode)
-    error_message = "authorizer_mode must be either 'pod' or 'lambda'"
+    condition     = contains(["lambda", "lambda-proxy", "in-cluster"], var.authorizer_mode)
+    error_message = "authorizer_mode must be 'lambda', 'lambda-proxy', or 'in-cluster'"
   }
 }
 
 variable "authorizer_replicas" {
-  description = "Number of authorizer pod replicas (only used when authorizer_mode = 'pod')"
+  description = "Number of authorizer pod replicas (used for 'in-cluster' mode and nginx proxy in 'lambda-proxy' mode)"
   type        = number
   default     = 2
 }
@@ -120,7 +126,7 @@ variable "log_level" {
 }
 
 # ============================================================================
-# Lambda Configuration (only used when authorizer_mode = 'lambda')
+# Lambda Configuration (used when authorizer_mode = 'lambda' or 'lambda-proxy')
 # ============================================================================
 
 variable "lambda_memory_size" {

@@ -86,7 +86,7 @@ data "archive_file" "lambda_authorizer" {
   count = local.use_lambda_function ? 1 : 0
 
   type        = "zip"
-  output_path = "${path.module}/.terraform/lambda_authorizer.zip"
+  output_path = "${path.module}/build/lambda_authorizer.zip"
 
   source {
     content  = file("${path.module}/authorizer/lambda_handler.py")

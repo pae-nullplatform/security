@@ -1,0 +1,16 @@
+# OpenTofu / Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
+
+# Build artifacts
+build/
+
+# Local overrides
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

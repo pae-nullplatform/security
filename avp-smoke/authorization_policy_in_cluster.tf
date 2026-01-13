@@ -4,9 +4,20 @@
 # This file contains all resources specific to running the AVP authorizer
 # as a Kubernetes Pod within the cluster (in-cluster mode).
 #
+# IMPORTANT: Para usar in-cluster mode, debes:
+# 1. Descomentar el Docker provider en providers.tf
+# 2. Descomentar los recursos docker_image y docker_registry_image en main.tf
+# 3. Tener Docker instalado en el runner de Terraform
+#
 # Note: The Istio mesh config (extensionProviders) is now consolidated in
 # authorization_policy.tf to prevent empty configmap during mode switches.
 # ============================================================================
+
+locals {
+  # Imagen del authorizer - solo definida cuando in-cluster mode está habilitado
+  # y Docker provider está configurado. Usa placeholder cuando Docker no está disponible.
+  authorizer_image = var.authorizer_mode == "in-cluster" ? "${aws_ecr_repository.authorizer[0].repository_url}:${local.authorizer_version}" : "placeholder:latest"
+}
 
 # ============================================================================
 # ServiceAccount with IAM Role (IRSA) - in-cluster mode only
@@ -68,7 +79,7 @@ resource "kubernetes_deployment_v1" "avp_ext_authz" {
 
         container {
           name              = "authorizer"
-          image             = docker_registry_image.authorizer[0].name
+          image             = local.authorizer_image
           image_pull_policy = "Always"
 
           port {

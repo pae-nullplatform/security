@@ -14,10 +14,12 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.20"
     }
-    docker = {
-      source  = "kreuzwerker/docker"
-      version = "~> 3.0"
-    }
+    # Docker provider solo es necesario para modo in-cluster
+    # Descomentar si usas authorizer_mode = "in-cluster"
+    # docker = {
+    #   source  = "kreuzwerker/docker"
+    #   version = "~> 3.0"
+    # }
     archive = {
       source  = "hashicorp/archive"
       version = "~> 2.0"
@@ -47,15 +49,16 @@ provider "kubernetes" {
 }
 
 # ============================================================================
-# Docker Provider para build y push de imágenes
+# Docker Provider para build y push de imágenes (solo modo in-cluster)
 # ============================================================================
-
-data "aws_ecr_authorization_token" "token" {}
-
-provider "docker" {
-  registry_auth {
-    address  = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
-    username = data.aws_ecr_authorization_token.token.user_name
-    password = data.aws_ecr_authorization_token.token.password
-  }
-}
+# Descomentar si usas authorizer_mode = "in-cluster"
+#
+# data "aws_ecr_authorization_token" "token" {}
+#
+# provider "docker" {
+#   registry_auth {
+#     address  = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
+#     username = data.aws_ecr_authorization_token.token.user_name
+#     password = data.aws_ecr_authorization_token.token.password
+#   }
+# }

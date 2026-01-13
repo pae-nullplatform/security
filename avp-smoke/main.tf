@@ -208,33 +208,35 @@ resource "aws_ecr_lifecycle_policy" "authorizer" {
 # ============================================================================
 # Docker Image Build & Push (in-cluster mode only)
 # ============================================================================
-
-resource "docker_image" "authorizer" {
-  count = var.authorizer_mode == "in-cluster" ? 1 : 0
-
-  name = "${aws_ecr_repository.authorizer[0].repository_url}:${local.authorizer_version}"
-
-  build {
-    context    = "${path.module}/authorizer"
-    dockerfile = "Dockerfile"
-    platform   = "linux/amd64"
-    label = {
-      "org.opencontainers.image.version" = local.authorizer_version
-      "org.opencontainers.image.source"  = "terraform"
-    }
-  }
-
-  triggers = {
-    dir_sha1 = sha1(join("", [for f in fileset("${path.module}/authorizer", "**") : filesha1("${path.module}/authorizer/${f}")]))
-    version  = local.authorizer_version
-  }
-}
-
-resource "docker_registry_image" "authorizer" {
-  count = var.authorizer_mode == "in-cluster" ? 1 : 0
-
-  name          = docker_image.authorizer[0].name
-  keep_remotely = false # Elimina la imagen del registry en destroy
-
-  depends_on = [aws_ecr_repository.authorizer]
-}
+# Descomentar si usas authorizer_mode = "in-cluster"
+# También requiere descomentar el Docker provider en providers.tf
+#
+# resource "docker_image" "authorizer" {
+#   count = var.authorizer_mode == "in-cluster" ? 1 : 0
+#
+#   name = "${aws_ecr_repository.authorizer[0].repository_url}:${local.authorizer_version}"
+#
+#   build {
+#     context    = "${path.module}/authorizer"
+#     dockerfile = "Dockerfile"
+#     platform   = "linux/amd64"
+#     label = {
+#       "org.opencontainers.image.version" = local.authorizer_version
+#       "org.opencontainers.image.source"  = "terraform"
+#     }
+#   }
+#
+#   triggers = {
+#     dir_sha1 = sha1(join("", [for f in fileset("${path.module}/authorizer", "**") : filesha1("${path.module}/authorizer/${f}")]))
+#     version  = local.authorizer_version
+#   }
+# }
+#
+# resource "docker_registry_image" "authorizer" {
+#   count = var.authorizer_mode == "in-cluster" ? 1 : 0
+#
+#   name          = docker_image.authorizer[0].name
+#   keep_remotely = false # Elimina la imagen del registry en destroy
+#
+#   depends_on = [aws_ecr_repository.authorizer]
+# }

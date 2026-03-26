@@ -88,7 +88,8 @@ resource "aws_lb" "lambda_authorizer" {
   security_groups    = [aws_security_group.lambda_alb[0].id]
   subnets            = local.alb_subnet_ids
 
-  enable_deletion_protection = false
+  # AUDIT: Deletion protection debe estar habilitado
+  enable_deletion_protection = true
 
   tags = merge(local.common_tags, {
     Name = "${local.name_prefix}-avp-lambda-alb"
@@ -144,7 +145,11 @@ resource "aws_lb_target_group_attachment" "lambda_authorizer" {
 }
 
 # ============================================================================
-# HTTP Listener (Port 80)
+# HTTP Listener (Port 80) - Forward to Lambda
+# Note: Istio ext_authz only supports HTTP (issue #57676), so this listener
+# must forward directly to the Lambda target group instead of redirecting to HTTPS.
+# This is safe because the ALB is internal and only receives traffic from
+# Istio gateway pods within the VPC.
 # ============================================================================
 
 resource "aws_lb_listener" "http" {

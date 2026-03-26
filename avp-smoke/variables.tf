@@ -129,6 +129,11 @@ variable "log_level" {
 # Lambda Configuration (used when authorizer_mode = 'lambda' or 'lambda-proxy')
 # ============================================================================
 
+variable "lambda_subnet_ids" {
+  description = "List of private subnet IDs for Lambda VPC configuration"
+  type        = list(string)
+}
+
 variable "lambda_memory_size" {
   description = "Memory size for Lambda function in MB"
   type        = number

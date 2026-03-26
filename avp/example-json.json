@@ -1,0 +1,58 @@
+{
+  "action": "service:action:create",
+  "id": "d5c8b0fd-9b81-42aa-8732-1b52b307c75a",
+  "name": "update-pae-exposer",
+  "slug": "update-pae-exposer",
+  "status": "pending",
+  "created_at": "2026-01-16T18:02:55.305Z",
+  "updated_at": "2026-01-16T18:02:55.305Z",
+  "parameters": {
+    "cedar": {
+      "namespace": "EnergyDigitalHub",
+      "group_prefix": "AWS_PlataformaUpstream_",
+      "principal_type": "User"
+    },
+    "routes": [
+      {
+        "visibility": "public",
+        "path": "/wells-manager/gestion-de-acciones",
+        "scope": "Desa",
+        "method": "GET",
+        "app_sub_domain": "Acciones",
+        "app_component": "WellMgrCenterFrontend",
+        "path_param": false,
+        "policies": {
+          "Read": ["Gestor", "Programador", "Pulling", "Workover", "Visita", "Administrador"]
+        }
+      },
+      {
+        "visibility": "public",
+        "path": "/wells-manager/gestion-de-acciones",
+        "scope": "Desa",
+        "method": "PATCH",
+        "app_sub_domain": "Acciones",
+        "app_component": "WellMgrCenterBackend",
+        "path_param": false,
+        "policies": {
+          "Update": ["Gestor", "Administrador"]
+        }
+      },
+      {
+        "visibility": "public",
+        "path": "/wells-manager/gestion-de-acciones/detalle-accion",
+        "scope": "Desa",
+        "method": "GET",
+        "app_sub_domain": "Acciones",
+        "app_component": "WellMgrCenterFrontend",
+        "path_param": false,
+        "policies": {
+          "Read": ["Gestor", "Programador", "Pulling", "Workover", "Visita", "Administrador"]
+        }
+      }
+    ],
+    "public_domain": "api.pae-infra.nullapps.io",
+    "private_domain": "api-internal.pae-infra.nullapps.io"
+  },
+  "results": {},
+  "...": "resto del JSON igual"
+}

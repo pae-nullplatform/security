@@ -1,0 +1,14 @@
+permit (
+  principal,
+  action == EnergyDigitalHub::Action::"Read",
+  resource == EnergyDigitalHub::WellMgrCenterFrontend::"/wells-manager/gestion-de-acciones"
+) when {
+  context.token["custom:groups"].containsAny([
+    "AWS_PlataformaUpstream_Gestor_Desa",
+    "AWS_PlataformaUpstream_Programador_Desa",
+    "AWS_PlataformaUpstream_Pulling_Desa",
+    "AWS_PlataformaUpstream_Workover_Desa",
+    "AWS_PlataformaUpstream_Visita_Desa",
+    "AWS_PlataformaUpstream_Administrador_Desa"
+  ])
+};

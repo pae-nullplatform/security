@@ -56,7 +56,7 @@ output "lambda_function_arn" {
 
 output "lambda_function_url" {
   description = "Lambda Function URL - in lambda or lambda-proxy mode"
-  value       = contains(["lambda", "lambda-proxy"], var.authorizer_mode) ? aws_lambda_function_url.authorizer[0].function_url : null
+  value       = var.authorizer_mode == "lambda-proxy" ? aws_lambda_function_url.authorizer[0].function_url : null
 }
 
 output "lambda_iam_role_arn" {

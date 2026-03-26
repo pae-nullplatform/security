@@ -65,6 +65,41 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# AUDIT: Lambda debe estar en VPC, requiere policy de VPC access
+resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
+  count = local.use_lambda_function ? 1 : 0
+
+  role       = aws_iam_role.lambda_authorizer[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# ============================================================================
+# Security Group for Lambda (AUDIT: SG propio, sin inbound, outbound restringido)
+# ============================================================================
+
+resource "aws_security_group" "lambda_authorizer" {
+  count = local.use_lambda_function ? 1 : 0
+
+  name        = "${local.name_prefix}-avp-lambda"
+  description = "Security group for AVP Lambda authorizer - no inbound, restricted outbound"
+  vpc_id      = data.aws_eks_cluster.current.vpc_config[0].vpc_id
+
+  # AUDIT: No inbound rules - Lambda no necesita recibir tráfico entrante
+
+  # AUDIT: Outbound solo a HTTPS (para AVP API y otros servicios AWS)
+  egress {
+    description = "HTTPS to AWS services (Verified Permissions, CloudWatch, etc.)"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-avp-lambda"
+  })
+}
+
 # ============================================================================
 # CloudWatch Log Group
 # ============================================================================
@@ -115,6 +150,12 @@ resource "aws_lambda_function" "authorizer" {
 
   reserved_concurrent_executions = var.lambda_reserved_concurrency >= 0 ? var.lambda_reserved_concurrency : null
 
+  # AUDIT: Lambda debe estar en VPC con subnets privadas y SG propio
+  vpc_config {
+    subnet_ids         = var.lambda_subnet_ids
+    security_group_ids = [aws_security_group.lambda_authorizer[0].id]
+  }
+
   environment {
     variables = {
       POLICY_STORE_ID = aws_verifiedpermissions_policy_store.main.id
@@ -124,7 +165,8 @@ resource "aws_lambda_function" "authorizer" {
 
   depends_on = [
     aws_cloudwatch_log_group.lambda_authorizer,
-    aws_iam_role_policy_attachment.lambda_basic_execution
+    aws_iam_role_policy_attachment.lambda_basic_execution,
+    aws_iam_role_policy_attachment.lambda_vpc_access
   ]
 
   tags = local.common_tags
@@ -135,10 +177,10 @@ resource "aws_lambda_function" "authorizer" {
 # ============================================================================
 
 resource "aws_lambda_function_url" "authorizer" {
-  count = local.use_lambda_function ? 1 : 0
+  count = var.authorizer_mode == "lambda-proxy" ? 1 : 0
 
   function_name      = aws_lambda_function.authorizer[0].function_name
-  authorization_type = "NONE" # Istio handles authentication via headers
+  authorization_type = "NONE" # Istio handles authentication via headers; only used in lambda-proxy mode
 
   cors {
     allow_origins = ["*"]

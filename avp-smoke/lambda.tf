@@ -86,13 +86,14 @@ resource "aws_security_group" "lambda_authorizer" {
 
   # AUDIT: No inbound rules - Lambda no necesita recibir tráfico entrante
 
-  # AUDIT: Outbound solo a HTTPS (para AVP API y otros servicios AWS)
+  # AUDIT: Outbound solo al CIDR de la VPC, el tráfico llega a AVP y CloudWatch
+  # a través de VPC Interface Endpoints (vpc_endpoints.tf), sin salir a internet.
   egress {
-    description = "HTTPS to AWS services (Verified Permissions, CloudWatch, etc.)"
+    description = "HTTPS to VPC Interface Endpoints (Verified Permissions, CloudWatch Logs)"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [data.aws_vpc.lambda_endpoints[0].cidr_block]
   }
 
   tags = merge(local.common_tags, {

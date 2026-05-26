@@ -65,47 +65,22 @@ resource "aws_verifiedpermissions_schema" "main" {
 # }
 
 # ============================================================================
+# SSM Parameter - Policy Store ID for service discovery
+# ============================================================================
+
+resource "aws_ssm_parameter" "avp_policy_store_id" {
+  name        = "/nullplatform/${local.name_prefix}/avp/policy-store-id"
+  description = "AVP Policy Store ID for ${local.name_prefix} - consumed by endpoint-exposer services"
+  type        = "String"
+  value       = aws_verifiedpermissions_policy_store.main.id
+
+  tags = local.common_tags
+}
+
+# ============================================================================
 # Policies - Cargadas desde archivos Cedar
 # ============================================================================
 
-resource "aws_verifiedpermissions_policy" "allow_authenticated_read" {
-  policy_store_id = aws_verifiedpermissions_policy_store.main.id
-
-  definition {
-    static {
-      description = "Allow authenticated users to read public endpoints"
-      statement   = file("${path.module}/policies/allow_authenticated_read.cedar")
-    }
-  }
-
-  depends_on = [aws_verifiedpermissions_schema.main]
-}
-
-resource "aws_verifiedpermissions_policy" "allow_smoke_access" {
-  policy_store_id = aws_verifiedpermissions_policy_store.main.id
-
-  definition {
-    static {
-      description = "Allow users with smoke-testers group to access /smoke endpoints"
-      statement   = file("${path.module}/policies/allow_smoke_access.cedar")
-    }
-  }
-
-  depends_on = [aws_verifiedpermissions_schema.main]
-}
-
-resource "aws_verifiedpermissions_policy" "deny_expired_tokens" {
-  policy_store_id = aws_verifiedpermissions_policy_store.main.id
-
-  definition {
-    static {
-      description = "Deny access for expired tokens"
-      statement   = file("${path.module}/policies/deny_expired_tokens.cedar")
-    }
-  }
-
-  depends_on = [aws_verifiedpermissions_schema.main]
-}
 
 # ============================================================================
 # IAM Role for Pod (IRSA - IAM Roles for Service Accounts) - in-cluster mode only

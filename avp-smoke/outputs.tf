@@ -12,6 +12,11 @@ output "policy_store_arn" {
   value       = aws_verifiedpermissions_policy_store.main.arn
 }
 
+output "avp_policy_store_ssm_path" {
+  description = "SSM Parameter path where the AVP Policy Store ID is published (for endpoint-exposer)"
+  value       = aws_ssm_parameter.avp_policy_store_id.name
+}
+
 # ============================================================================
 # Authorizer Mode Outputs
 # ============================================================================

@@ -134,6 +134,12 @@ variable "lambda_subnet_ids" {
   type        = list(string)
 }
 
+variable "vpc_endpoint_subnet_ids" {
+  description = "Subnet IDs for VPC Interface Endpoints. Must be in AZs supported by each endpoint service. Defaults to lambda_subnet_ids if not set."
+  type        = list(string)
+  default     = null
+}
+
 variable "lambda_memory_size" {
   description = "Memory size for Lambda function in MB"
   type        = number

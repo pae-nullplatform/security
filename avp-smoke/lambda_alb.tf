@@ -52,13 +52,13 @@ resource "aws_security_group" "lambda_alb" {
   description = "Security group for AVP Lambda ALB (HTTP ext_authz)"
   vpc_id      = data.aws_vpc.eks[0].id
 
-  # Allow HTTP from VPC (Istio gateway pods)
+  # Allow HTTP from all VPC CIDR blocks (primary + secondary ranges)
   ingress {
     description = "HTTP from VPC"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.eks[0].cidr_block]
+    cidr_blocks = data.aws_vpc.eks[0].cidr_block_associations[*].cidr_block
   }
 
   # Allow all outbound (for Lambda invocation)

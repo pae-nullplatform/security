@@ -170,6 +170,43 @@ resource "kubernetes_manifest" "avp_authz_policy" {
 }
 
 # ============================================================================
+# Authorization Policy - Global Gateway Catch-All
+# ============================================================================
+# Applies AVP ext-authz to ALL traffic through gateway-public.
+# Cedar policies in AVP are deny-by-default; the endpoint-exposer manages
+# per-route permit policies. This single policy replaces per-service
+# AuthorizationPolicies created by older versions of the exposer.
+
+resource "kubernetes_manifest" "avp_authz_policy_gateway_catchall" {
+  manifest = {
+    apiVersion = "security.istio.io/v1"
+    kind       = "AuthorizationPolicy"
+    metadata = {
+      name      = "avp-gateway-public-catchall"
+      namespace = var.kubernetes_namespace
+      labels = {
+        "app.kubernetes.io/managed-by" = "terraform"
+        "nullplatform.com/managed-by"  = "avp-infra"
+      }
+    }
+    spec = {
+      selector = {
+        matchLabels = {
+          "gateway.networking.k8s.io/gateway-name" = "gateway-public"
+        }
+      }
+      action = "CUSTOM"
+      provider = {
+        name = "avp-ext-authz"
+      }
+      rules = [{}]
+    }
+  }
+
+  depends_on = [kubernetes_config_map_v1_data.istio_mesh_config]
+}
+
+# ============================================================================
 # Authorization Policy - HTTPRoute targetRef (Istio 1.22+)
 # ============================================================================
 # This policy targets specific Services directly.

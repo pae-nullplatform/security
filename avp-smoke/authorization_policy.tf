@@ -207,6 +207,54 @@ resource "kubernetes_manifest" "avp_authz_policy_gateway_catchall" {
 }
 
 # ============================================================================
+# Authorization Policy - Global Gateway Catch-All (gateway-private)
+# ============================================================================
+# DISABLED BY DEFAULT. Uncomment this resource if routes exposed through
+# gateway-private also require AVP authorization enforcement.
+#
+# When to uncomment:
+#   - You have endpoint-exposer services using a "private" scope (i.e., their
+#     HTTPRoute targets gateway-private instead of gateway-public).
+#   - You need service-to-service or internal traffic to be authenticated and
+#     authorized via Cedar policies, not just trusted by cluster membership.
+#
+# Why it is off by default:
+#   - gateway-private is internal-only (not reachable from the internet).
+#   - Traffic through gateway-private is typically cluster-internal and
+#     considered trusted without an extra authz hop.
+#   - Enabling ext-authz here adds latency and requires every internal caller
+#     to present a valid JWT — change only when that tradeoff is acceptable.
+#
+# resource "kubernetes_manifest" "avp_authz_policy_gateway_private_catchall" {
+#   manifest = {
+#     apiVersion = "security.istio.io/v1"
+#     kind       = "AuthorizationPolicy"
+#     metadata = {
+#       name      = "avp-gateway-private-catchall"
+#       namespace = var.kubernetes_namespace
+#       labels = {
+#         "app.kubernetes.io/managed-by" = "terraform"
+#         "nullplatform.com/managed-by"  = "avp-infra"
+#       }
+#     }
+#     spec = {
+#       selector = {
+#         matchLabels = {
+#           "gateway.networking.k8s.io/gateway-name" = "gateway-private"
+#         }
+#       }
+#       action = "CUSTOM"
+#       provider = {
+#         name = "avp-ext-authz"
+#       }
+#       rules = [{}]
+#     }
+#   }
+#
+#   depends_on = [kubernetes_config_map_v1_data.istio_mesh_config]
+# }
+
+# ============================================================================
 # Authorization Policy - HTTPRoute targetRef (Istio 1.22+)
 # ============================================================================
 # This policy targets specific Services directly.
